@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <utility>
 #include <vector>
 #include <QDebug>
 
@@ -96,6 +97,64 @@ static double mode_peak_center(const std::array<double, mode_count_local>& p)
             idx = i;
     return mode_centers[idx];
 }
+
+static double evaluate_total_topological_debt(
+    const detail::alpha_spectrum::temporal_economy_state& state,
+    bool rotation)
+{
+    const auto& debt = rotation ? state.rot_transition_debt : state.pos_transition_debt;
+    double total = 0.0;
+    for (size_t i = 0; i < detail::alpha_spectrum::transition_matrix_size; i++)
+        total += std::max(0.0, debt[i].load(std::memory_order_relaxed));
+    return total;
+}
+
+static double calculate_coupling_constant(double total_debt, double max_capacity)
+{
+    const double safe_capacity = std::max(max_capacity, 1e-9);
+    const double debt_ratio = std::clamp(total_debt / safe_capacity, 0.0, 1.0);
+    return debt_ratio * debt_ratio;
+}
+
+static double apply_amortization(double previous_resolved, double new_measurement, double coupling_constant)
+{
+    return new_measurement + coupling_constant * (previous_resolved - new_measurement);
+}
+
+static detail::alpha_spectrum::tracking_head dominant_head_from_shares(
+    double ema_share,
+    double brownian_share,
+    double adaptive_share,
+    double predictive_share)
+{
+    using detail::alpha_spectrum::tracking_head;
+    std::array<std::pair<tracking_head, double>, 4> values {{
+        {tracking_head::ema, ema_share},
+        {tracking_head::brownian, brownian_share},
+        {tracking_head::adaptive, adaptive_share},
+        {tracking_head::predictive, predictive_share}
+    }};
+
+    auto best = values[0];
+    for (size_t i = 1; i < values.size(); i++)
+    {
+        if (values[i].second > best.second)
+            best = values[i];
+    }
+    return best.first;
+}
+
+static void decay_transition_debt(detail::alpha_spectrum::temporal_economy_state& state, double rate)
+{
+    const double clamped = std::clamp(rate, 0.0, 1.0);
+    for (size_t i = 0; i < detail::alpha_spectrum::transition_matrix_size; i++)
+    {
+        const double pos = state.pos_transition_debt[i].load(std::memory_order_relaxed);
+        const double rot = state.rot_transition_debt[i].load(std::memory_order_relaxed);
+        state.pos_transition_debt[i].store(pos * clamped, std::memory_order_relaxed);
+        state.rot_transition_debt[i].store(rot * clamped, std::memory_order_relaxed);
+    }
+}
 }
 
 detail::alpha_spectrum::calibration_status& detail::alpha_spectrum::shared_calibration_status()
@@ -187,6 +246,12 @@ void alpha_spectrum::filter(const double* input, double* output)
         last_highrate_pose_valid = false;
         initialize_uniform(rot_mode_prob);
         initialize_uniform(pos_mode_prob);
+        for (auto& x : temporal_state.pos_transition_debt)
+            x.store(0.0, std::memory_order_relaxed);
+        for (auto& x : temporal_state.rot_transition_debt)
+            x.store(0.0, std::memory_order_relaxed);
+        temporal_state.max_capacity.store(10.0, std::memory_order_relaxed);
+        last_dominant_head.fill(detail::alpha_spectrum::tracking_head::ema);
         std::copy(last_output, last_output + axis_count, output);
         return;
     }
@@ -245,15 +310,22 @@ void alpha_spectrum::filter(const double* input, double* output)
     const double ngc_kappa = *s.ngc_kappa;
     const double ngc_nominal_z = *s.ngc_nominal_z;
 
-    // NGC: explicit depth-scale commutator coupling residual.
+    // NGC depth-commutator lift: isolate Z torsion from XY radial geometry.
+    std::array<double, 3> bifurcated_pos {input[TX], input[TY], input[TZ]};
     {
-        const double curr_Z = std::max(std::fabs(input[TZ]), 0.3);
-        const double delta_Z = curr_Z - last_Z;
-        last_Z = curr_Z;
+        const double raw_x = input[TX];
+        const double raw_y = input[TY];
+        const double curr_z = std::max(std::fabs(input[TZ]), 0.3);
+        last_Z = curr_z;
 
-        const double radial_pos = std::hypot(input[TX], input[TY]);
-        coupling_residual = ngc_kappa * std::fabs(delta_Z) * (radial_pos / (ngc_nominal_z * ngc_nominal_z));
-        coupling_residual = std::clamp(coupling_residual, 0.0, 3.0);
+        const double nominal_depth = std::max(ngc_nominal_z, 1e-6);
+        const double apparent_scale = nominal_depth / curr_z;
+        const double radial_xy = std::hypot(raw_x, raw_y);
+        const double kappa = ngc_kappa * ((apparent_scale - 1.0) / (nominal_depth * nominal_depth));
+        const double depth_torsion = 0.5 * (kappa * radial_xy);
+
+        bifurcated_pos = {raw_x, raw_y, depth_torsion};
+        coupling_residual = std::clamp(std::fabs(depth_torsion), 0.0, 3.0);
     }
 
     // Stage 1: per-axis measurement processing.
@@ -284,8 +356,10 @@ void alpha_spectrum::filter(const double* input, double* output)
     for (int i = TX; i <= Roll; i++)
     {
         const bool is_rotation = i >= Yaw;
-        double input_value = input[i];
-        double raw_input_value = input[i];
+        const bool is_position = i <= TZ;
+        const double measurement_value = is_position ? bifurcated_pos[i] : input[i];
+        double input_value = measurement_value;
+        double raw_input_value = measurement_value;
         double delta = input_value - last_output[i];
 
         double raw_delta = raw_input_value - last_input[i];
@@ -527,7 +601,36 @@ void alpha_spectrum::filter(const double* input, double* output)
                 composed_output = input_value;
         }
 
-        last_output[i] = composed_output;
+        const auto current_head = dominant_head_from_shares(
+            ema_share,
+            brownian_share,
+            adaptive_share,
+            predictive_share);
+        const auto previous_head = last_dominant_head[i];
+        last_dominant_head[i] = current_head;
+
+        if (mtm_enabled)
+        {
+            const double sigma = std::sqrt(std::max(last_noise[i], 1e-8));
+            const double normalized_residual = std::min(std::fabs(input_value - composed_output) / sigma, 4.0);
+            const double innovation_debt = 0.05 * normalized_residual;
+            if (is_rotation)
+                temporal_state.add_rot_debt(previous_head, current_head, innovation_debt);
+            else
+                temporal_state.add_pos_debt(previous_head, current_head, innovation_debt);
+        }
+
+        double coupling_constant = 0.0;
+        if (mtm_enabled)
+        {
+            const double total_debt = evaluate_total_topological_debt(temporal_state, is_rotation);
+            const double max_capacity = temporal_state.max_capacity.load(std::memory_order_relaxed);
+            coupling_constant = calculate_coupling_constant(total_debt, max_capacity);
+        }
+
+        const double stabilized_output = apply_amortization(filtered_prev, composed_output, coupling_constant);
+
+        last_output[i] = stabilized_output;
         output[i] = last_output[i];
 
         double prediction_delta = last_output[i] - filtered_prev;
@@ -633,6 +736,10 @@ void alpha_spectrum::filter(const double* input, double* output)
         pos_mode_e = mode_expectation(pos_mode_prob);
         rot_mode_peak = mode_peak_center(rot_mode_prob);
         pos_mode_peak = mode_peak_center(pos_mode_prob);
+
+        // Continuous debt resolution keeps stiffness bounded and self-recovering.
+        static constexpr double amortization_rate = 0.95;
+        decay_transition_debt(temporal_state, amortization_rate);
     }
 
     // Stage 4: publish status for the settings panel.

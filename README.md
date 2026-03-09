@@ -26,6 +26,10 @@ Don't be afraid to submit an **issue/feature request** if you have any problems!
 
 For the new Alpha Spectrum filter parameter guide, see [filter-alpha-spectrum/README.md](filter-alpha-spectrum/README.md).
 
+### Temporary module split plan
+
+For the temporary OpenHMD/Fusion/Alpha-Spectrum split-and-merge tracking plan, see [THREE_MODULE_SPLIT_PLAN.md](THREE_MODULE_SPLIT_PLAN.md).
+
 ## Tracking input
 
 - PointTracker by Patrick Ruoff, FreeTrack-like light points

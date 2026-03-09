@@ -11,6 +11,48 @@
 
 namespace detail::alpha_spectrum {
 
+enum class tracking_head : size_t {
+    ema = 0,
+    brownian,
+    adaptive,
+    predictive,
+    head_count
+};
+
+static constexpr size_t transition_matrix_dim = static_cast<size_t>(tracking_head::head_count);
+static constexpr size_t transition_matrix_size = transition_matrix_dim * transition_matrix_dim;
+
+struct temporal_economy_state final
+{
+    std::array<std::atomic<double>, transition_matrix_size> pos_transition_debt {};
+    std::array<std::atomic<double>, transition_matrix_size> rot_transition_debt {};
+    std::atomic<double> max_capacity {10.0};
+
+    static constexpr size_t idx(tracking_head from, tracking_head to)
+    {
+        return static_cast<size_t>(from) * transition_matrix_dim + static_cast<size_t>(to);
+    }
+
+    static void atomic_add(std::atomic<double>& cell, double delta)
+    {
+        double current = cell.load(std::memory_order_relaxed);
+        while (!cell.compare_exchange_weak(current, current + delta,
+                                           std::memory_order_relaxed,
+                                           std::memory_order_relaxed))
+        {}
+    }
+
+    void add_pos_debt(tracking_head from, tracking_head to, double value)
+    {
+        atomic_add(pos_transition_debt[idx(from, to)], value);
+    }
+
+    void add_rot_debt(tracking_head from, tracking_head to, double value)
+    {
+        atomic_add(rot_transition_debt[idx(from, to)], value);
+    }
+};
+
 // Shared diagnostics exposed to the settings dialog.
 // Note: this is runtime status, not persistent profile state.
 struct calibration_status final
@@ -101,6 +143,15 @@ private:
     double coupling_residual = 0.0;
     std::array<double, mode_count> rot_mode_prob {};
     std::array<double, mode_count> pos_mode_prob {};
+    detail::alpha_spectrum::temporal_economy_state temporal_state;
+    std::array<detail::alpha_spectrum::tracking_head, axis_count> last_dominant_head {
+        detail::alpha_spectrum::tracking_head::ema,
+        detail::alpha_spectrum::tracking_head::ema,
+        detail::alpha_spectrum::tracking_head::ema,
+        detail::alpha_spectrum::tracking_head::ema,
+        detail::alpha_spectrum::tracking_head::ema,
+        detail::alpha_spectrum::tracking_head::ema
+    };
     bool first_run = true;
     
     // High-rate gyro integration for Predictive head
