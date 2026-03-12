@@ -96,6 +96,11 @@ struct calibration_status final
     std::atomic<double> pos_alpha_max {.75};
     std::atomic<double> pos_curve {1.2};
     std::atomic<double> pos_deadzone {.1};
+    std::atomic<double> anti_inertia_budget {1.0};
+    std::atomic<double> anomaly_score {0.0};
+    std::atomic<double> pos_predictive_translation_error {0.0};
+    std::atomic<double> invariant_correction_magnitude {0.0};
+    std::atomic<bool> anomaly_active {false};
 };
 
 calibration_status& shared_calibration_status();
@@ -109,6 +114,8 @@ struct alpha_spectrum : IFilter
     void set_tracker(ITracker* tracker) override;
     void center() override { first_run = true; }
     module_status initialize() override { return status_ok(); }
+    int diagnostics_names(const char** buf, int maxn) override;
+    int diagnostics(double* buf, int maxn) override;
 
 private:
     // Current implementation scope:
@@ -141,6 +148,22 @@ private:
     double noise_rc = 0.;
     double last_Z = 0.0;
     double coupling_residual = 0.0;
+    double last_coupling_residual = 0.0;
+    double anti_inertia_budget = 1.0;
+    double anomaly_score = 0.0;
+    int anomaly_cooldown_frames = 0;
+    bool anomaly_active = false;
+
+    struct translational_predictive_state final
+    {
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        double vx = 0.0;
+        double vy = 0.0;
+        double vz = 0.0;
+    };
+    translational_predictive_state translation_state;
     std::array<double, mode_count> rot_mode_prob {};
     std::array<double, mode_count> pos_mode_prob {};
     detail::alpha_spectrum::temporal_economy_state temporal_state;

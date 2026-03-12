@@ -491,6 +491,14 @@ void pipeline::logic()
             value = maybe_apply_filter(value);
         nan_check(value);
         logger.write_pose(value); // "filtered"
+        // extra filter diagnostic columns per frame
+        if (libs.pFilter)
+        {
+            double diag_vals[16] {};
+            const int ndiag = libs.pFilter->diagnostics(diag_vals, 16);
+            if (ndiag > 0)
+                logger.write(diag_vals, ndiag);
+        }
     }
 
     if (s.apply_mapping_curves) {
@@ -617,6 +625,14 @@ void pipeline::run()
                 std::sprintf(buffer, "%s%s", datachannels[j], posechannels[i]);
                 logger.write(buffer);
             }
+        }
+        // extra filter diagnostic columns (no-op if filter doesn't implement diagnostics)
+        if (libs.pFilter)
+        {
+            const char* diag_names[16] {};
+            const int ndiag = libs.pFilter->diagnostics_names(diag_names, 16);
+            for (int k = 0; k < ndiag; ++k)
+                logger.write(diag_names[k]);
         }
         logger.next_line();
     }

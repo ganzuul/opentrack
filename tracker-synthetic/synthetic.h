@@ -17,6 +17,7 @@ enum synthetic_preset : int {
     preset_orbit_6dof = 3,
     preset_step_depth = 4,
     preset_step_yaw = 5,
+    preset_orbit_release = 6,
 };
 
 enum synthetic_output_mode : int {
@@ -32,6 +33,11 @@ struct synthetic_settings : opts {
     value<double> translation_amplitude;
     value<double> rotation_amplitude;
     value<double> frequency_hz;
+    value<double> orbit_tilt_deg;
+    value<double> orbital_velocity;
+    value<bool> gravity_enabled;
+    value<double> release_delay_s;
+    value<double> post_release_stop_delay_s;
 
 #ifdef SYNTHETIC_IS_B
     static constexpr const char* settings_name = "synthetic-tracker-b";
@@ -46,7 +52,12 @@ struct synthetic_settings : opts {
         sample_rate_hz(b, "sample-rate-hz", 250),
         translation_amplitude(b, "translation-amplitude", 15.0),
         rotation_amplitude(b, "rotation-amplitude", 45.0),
-        frequency_hz(b, "frequency-hz", 0.5)
+        frequency_hz(b, "frequency-hz", 0.5),
+        orbit_tilt_deg(b, "orbit-tilt-deg", 35.0),
+        orbital_velocity(b, "orbital-velocity", 2.0),
+        gravity_enabled(b, "gravity-enabled", true),
+        release_delay_s(b, "release-delay-s", 4.0),
+        post_release_stop_delay_s(b, "post-release-stop-delay-s", 3.0)
     {}
 };
 
@@ -66,7 +77,10 @@ protected:
 
 private:
     static void fill_pose(double t_seconds, synthetic_preset preset, double translation_amplitude,
-                          double rotation_amplitude, double frequency_hz, double* pose);
+                          double rotation_amplitude, double frequency_hz,
+                          double orbit_tilt_deg, double orbital_velocity,
+                          bool gravity_enabled, double release_delay_s,
+                          double post_release_stop_delay_s, double* pose);
     static void apply_output_mode(double* pose, synthetic_output_mode mode);
 
     synthetic_settings s;

@@ -241,6 +241,12 @@ void alpha_spectrum::filter(const double* input, double* output)
         std::fill(filtered_brownian_energy, filtered_brownian_energy + axis_count, 0.0);
         std::copy(input, input + axis_count, predicted_next_output);
         coupling_residual = 0.0;
+        last_coupling_residual = 0.0;
+        anti_inertia_budget = 1.0;
+        anomaly_score = 0.0;
+        anomaly_cooldown_frames = 0;
+        anomaly_active = false;
+        translation_state = {};
         last_Z = std::max(std::fabs(input[TZ]), 0.3);
         std::fill(gyro_integrated_rotation, gyro_integrated_rotation + 3, 0.0);
         last_highrate_pose_valid = false;
@@ -306,9 +312,17 @@ void alpha_spectrum::filter(const double* input, double* output)
     const double brownian_head_gain = *s.brownian_head_gain;
     const double adaptive_threshold_lift = *s.adaptive_threshold_lift;
     const double predictive_head_gain = *s.predictive_head_gain;
+    const double predictive_translation_gain = *s.predictive_translation_gain;
     const double mtm_shoulder_base = *s.mtm_shoulder_base;
     const double ngc_kappa = *s.ngc_kappa;
     const double ngc_nominal_z = *s.ngc_nominal_z;
+    const double invariant_correction_gain = *s.invariant_correction_gain;
+    const double anti_inertia_budget_max = std::max((double)*s.anti_inertia_budget_max, 0.1);
+    const double anti_inertia_recovery_rate = std::max((double)*s.anti_inertia_recovery_rate, 0.0);
+    const double anomaly_threshold = std::max((double)*s.anomaly_threshold, 0.1);
+
+    anti_inertia_budget = std::clamp(anti_inertia_budget, 0.0, anti_inertia_budget_max);
+    const double anti_inertia_budget_ratio = std::clamp(anti_inertia_budget / anti_inertia_budget_max, 0.0, 1.0);
 
     // NGC depth-commutator lift: keep measured depth on TZ and use torsion as residual coupling only.
     std::array<double, 3> bifurcated_pos {input[TX], input[TY], input[TZ]};
@@ -327,6 +341,36 @@ void alpha_spectrum::filter(const double* input, double* output)
         bifurcated_pos = {raw_x, raw_y, input[TZ]};
         coupling_residual = std::clamp(std::fabs(depth_torsion), 0.0, 3.0);
     }
+    const double coupling_residual_jump = std::fabs(coupling_residual - last_coupling_residual);
+
+    // Phase 2 predictive translation path:
+    // propagate Cartesian position with explicit velocity state and optional
+    // invariant correction derived from NGC coupling residual.
+    std::array<double, 3> translation_prediction {
+        translation_state.x + translation_state.vx * safe_dt * predictive_translation_gain,
+        translation_state.y + translation_state.vy * safe_dt * predictive_translation_gain,
+        translation_state.z + translation_state.vz * safe_dt * predictive_translation_gain,
+    };
+
+    const double radial_xy = std::hypot(input[TX], input[TY]);
+    const double inv_depth = 1.0 / std::max(std::fabs(input[TZ]), 0.3);
+    std::array<double, 3> invariant_correction {0.0, 0.0, 0.0};
+    if (radial_xy > 1e-6)
+    {
+        const double radial_x = input[TX] / radial_xy;
+        const double radial_y = input[TY] / radial_xy;
+        const double corr_xy = invariant_correction_gain * coupling_residual * inv_depth;
+        invariant_correction[0] = -corr_xy * radial_x;
+        invariant_correction[1] = -corr_xy * radial_y;
+    }
+    invariant_correction[2] = invariant_correction_gain * coupling_residual;
+
+    for (int axis = 0; axis < 3; axis++)
+        translation_prediction[axis] += invariant_correction[axis] * safe_dt;
+
+    const double invariant_correction_magnitude =
+        std::hypot(invariant_correction[0], std::hypot(invariant_correction[1], invariant_correction[2]));
+    double pos_predictive_translation_error_sum = 0.0;
 
     // Stage 1: per-axis measurement processing.
     // - wrap handling for rotational continuity
@@ -352,6 +396,8 @@ void alpha_spectrum::filter(const double* input, double* output)
     double pos_adaptive_drive_sum = 0.0;
     double pos_predictive_drive_sum = 0.0;
     double pos_mtm_drive_sum = 0.0;
+    double pos_residual_sum = 0.0;
+    int pos_head_transition_count = 0;
 
     for (int i = TX; i <= Roll; i++)
     {
@@ -609,10 +655,17 @@ void alpha_spectrum::filter(const double* input, double* output)
         const auto previous_head = last_dominant_head[i];
         last_dominant_head[i] = current_head;
 
+        const double sigma = std::sqrt(std::max(last_noise[i], 1e-8));
+        const double normalized_residual = std::min(std::fabs(input_value - composed_output) / sigma, 4.0);
+        if (is_position)
+        {
+            pos_residual_sum += normalized_residual;
+            if (current_head != previous_head)
+                pos_head_transition_count++;
+        }
+
         if (mtm_enabled)
         {
-            const double sigma = std::sqrt(std::max(last_noise[i], 1e-8));
-            const double normalized_residual = std::min(std::fabs(input_value - composed_output) / sigma, 4.0);
             const double innovation_debt = 0.05 * normalized_residual;
             if (is_rotation)
                 temporal_state.add_rot_debt(previous_head, current_head, innovation_debt);
@@ -628,7 +681,24 @@ void alpha_spectrum::filter(const double* input, double* output)
             coupling_constant = calculate_coupling_constant(total_debt, max_capacity);
         }
 
-        const double stabilized_output = apply_amortization(filtered_prev, composed_output, coupling_constant);
+        // Anti-inertia gating: reduce stiff shoulder locking when budget is depleted.
+        if (is_position)
+            coupling_constant *= (0.35 + 0.65 * anti_inertia_budget_ratio);
+
+        // Bounded correction before amortization for unexpected position branch changes.
+        double corrected_composed_output = composed_output;
+        if (is_position)
+        {
+            const double residual = input_value - composed_output;
+            const double anomaly_drive = std::clamp(
+                0.6 * normalized_residual + 0.3 * coupling_residual_jump + 0.1 * (current_head != previous_head ? 1.0 : 0.0),
+                0.0,
+                4.0);
+            const double corr_factor = std::clamp(invariant_correction_gain * anti_inertia_budget_ratio * anomaly_drive / 4.0, 0.0, 1.0);
+            corrected_composed_output += residual * corr_factor;
+        }
+
+        const double stabilized_output = apply_amortization(filtered_prev, corrected_composed_output, coupling_constant);
 
         last_output[i] = stabilized_output;
         output[i] = last_output[i];
@@ -649,6 +719,12 @@ void alpha_spectrum::filter(const double* input, double* output)
             predicted_next_output[i] = last_output[i] + gyro_integrated_rotation[gyro_idx];
             // Reset accumulator after use
             gyro_integrated_rotation[gyro_idx] = 0.0;
+        }
+        else if (is_position)
+        {
+            const int axis = i;
+            predicted_next_output[i] = translation_prediction[axis];
+            pos_predictive_translation_error_sum += std::fabs(input_value - translation_prediction[axis]);
         }
         else
         {
@@ -708,6 +784,46 @@ void alpha_spectrum::filter(const double* input, double* output)
     const double pos_adaptive_drive_avg = pos_adaptive_drive_sum / 3.0;
     const double pos_predictive_drive_avg = pos_predictive_drive_sum / 3.0;
     const double pos_mtm_drive_avg = pos_mtm_drive_sum / 3.0;
+    const double pos_predictive_translation_error_avg = pos_predictive_translation_error_sum / 3.0;
+
+    // Phase 3 anomaly score + anti-inertia budget dynamics.
+    const double pos_residual_avg = pos_residual_sum / 3.0;
+    const double pos_head_transition_ratio = std::clamp(pos_head_transition_count / 3.0, 0.0, 1.0);
+    anomaly_score = std::clamp(
+        0.6 * pos_residual_avg + 0.25 * coupling_residual_jump + 0.15 * pos_head_transition_ratio,
+        0.0,
+        10.0);
+
+    if (anomaly_score > anomaly_threshold)
+    {
+        const double consume = (anomaly_score - anomaly_threshold) * safe_dt;
+        anti_inertia_budget = std::max(0.0, anti_inertia_budget - consume);
+        anomaly_active = true;
+        anomaly_cooldown_frames = 6;
+    }
+    else
+    {
+        anti_inertia_budget = std::min(anti_inertia_budget_max,
+                                       anti_inertia_budget + anti_inertia_recovery_rate * safe_dt * anti_inertia_budget_max);
+        if (anomaly_cooldown_frames > 0)
+            anomaly_cooldown_frames--;
+        anomaly_active = anomaly_cooldown_frames > 0;
+    }
+
+    last_coupling_residual = coupling_residual;
+
+    // Update translational predictor state from resolved output.
+    {
+        const double old_x = translation_state.x;
+        const double old_y = translation_state.y;
+        const double old_z = translation_state.z;
+        translation_state.x = last_output[TX];
+        translation_state.y = last_output[TY];
+        translation_state.z = last_output[TZ];
+        translation_state.vx = (translation_state.x - old_x) / safe_dt;
+        translation_state.vy = (translation_state.y - old_y) / safe_dt;
+        translation_state.vz = (translation_state.z - old_z) / safe_dt;
+    }
 
     const double rot_brownian_damped =
         rot_brownian_raw_avg > 1e-12 ?
@@ -781,6 +897,41 @@ void alpha_spectrum::filter(const double* input, double* output)
     status.pos_alpha_max.store(*s.pos_alpha_max, std::memory_order_relaxed);
     status.pos_curve.store(*s.pos_curve, std::memory_order_relaxed);
     status.pos_deadzone.store(*s.pos_deadzone, std::memory_order_relaxed);
+    status.anti_inertia_budget.store(anti_inertia_budget, std::memory_order_relaxed);
+    status.anomaly_score.store(anomaly_score, std::memory_order_relaxed);
+    status.pos_predictive_translation_error.store(pos_predictive_translation_error_avg, std::memory_order_relaxed);
+    status.invariant_correction_magnitude.store(invariant_correction_magnitude, std::memory_order_relaxed);
+    status.anomaly_active.store(anomaly_active, std::memory_order_relaxed);
+}
+
+static const char* const alpha_diag_names[] = {
+    "anomaly_score",
+    "anti_inertia_budget",
+    "anomaly_active",
+    "predictive_translation_error",
+    "invariant_correction_mag",
+};
+static constexpr int alpha_diag_count = (int)std::size(alpha_diag_names);
+
+int alpha_spectrum::diagnostics_names(const char** buf, int maxn)
+{
+    const int n = std::min(alpha_diag_count, maxn);
+    for (int i = 0; i < n; ++i)
+        buf[i] = alpha_diag_names[i];
+    return n;
+}
+
+int alpha_spectrum::diagnostics(double* buf, int maxn)
+{
+    if (maxn < alpha_diag_count)
+        return 0;
+    const auto& status = detail::alpha_spectrum::shared_calibration_status();
+    buf[0] = status.anomaly_score.load(std::memory_order_relaxed);
+    buf[1] = status.anti_inertia_budget.load(std::memory_order_relaxed);
+    buf[2] = status.anomaly_active.load(std::memory_order_relaxed) ? 1.0 : 0.0;
+    buf[3] = status.pos_predictive_translation_error.load(std::memory_order_relaxed);
+    buf[4] = status.invariant_correction_magnitude.load(std::memory_order_relaxed);
+    return alpha_diag_count;
 }
 
 OPENTRACK_DECLARE_FILTER(alpha_spectrum, dialog_alpha_spectrum, alpha_spectrumDll)

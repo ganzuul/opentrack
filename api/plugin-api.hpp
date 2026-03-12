@@ -158,6 +158,13 @@ struct OTR_API_EXPORT IFilter : module_status_mixin
     virtual void set_tracker(ITracker* tracker) { (void)tracker; }
     // optionally reset the filter when centering
     virtual void center() {}
+
+    // optional per-frame diagnostics for CSV logging.
+    // diagnostics_names() fills buf with column name strings; returns n <= maxn columns written.
+    // diagnostics() fills buf with the corresponding double values for the current frame.
+    // Default implementations return 0 (no extra columns).
+    virtual int diagnostics_names(const char** /*buf*/, int /*maxn*/) { return 0; }
+    virtual int diagnostics(double* /*buf*/, int /*maxn*/) { return 0; }
 };
 
 struct OTR_API_EXPORT IFilterDialog : public plugin_api::detail::BaseDialog

@@ -14,6 +14,11 @@ synthetic_dialog::synthetic_dialog()
     ui.translation_amplitude->setValue((double)s.translation_amplitude);
     ui.rotation_amplitude->setValue((double)s.rotation_amplitude);
     ui.frequency_hz->setValue((double)s.frequency_hz);
+    ui.orbit_tilt_deg->setValue((double)s.orbit_tilt_deg);
+    ui.orbital_velocity->setValue((double)s.orbital_velocity);
+    ui.gravity_enabled->setChecked((bool)s.gravity_enabled);
+    ui.release_delay_s->setValue((double)s.release_delay_s);
+    ui.post_release_stop_delay_s->setValue((double)s.post_release_stop_delay_s);
 }
 
 void synthetic_dialog::doOK()
@@ -24,6 +29,11 @@ void synthetic_dialog::doOK()
     s.translation_amplitude = ui.translation_amplitude->value();
     s.rotation_amplitude = ui.rotation_amplitude->value();
     s.frequency_hz = ui.frequency_hz->value();
+    s.orbit_tilt_deg = ui.orbit_tilt_deg->value();
+    s.orbital_velocity = ui.orbital_velocity->value();
+    s.gravity_enabled = ui.gravity_enabled->isChecked();
+    s.release_delay_s = ui.release_delay_s->value();
+    s.post_release_stop_delay_s = ui.post_release_stop_delay_s->value();
     s.b->save();
     close();
 }

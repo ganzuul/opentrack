@@ -23,6 +23,7 @@
        <item><property name="text"><string>Orbit 6DOF</string></property></item>
        <item><property name="text"><string>Step depth</string></property></item>
        <item><property name="text"><string>Step yaw</string></property></item>
+       <item><property name="text"><string>Orbit release experiment</string></property></item>
       </widget>
      </item>
      <item row="1" column="0">
@@ -84,6 +85,64 @@
        <property name="maximum"><double>10.000000000000000</double></property>
        <property name="singleStep"><double>0.050000000000000</double></property>
        <property name="value"><double>0.500000000000000</double></property>
+      </widget>
+     </item>
+     <item row="6" column="0">
+      <widget class="QLabel" name="label_orbit_tilt">
+       <property name="text"><string>Orbit tilt angle (deg)</string></property>
+      </widget>
+     </item>
+     <item row="6" column="1">
+      <widget class="QDoubleSpinBox" name="orbit_tilt_deg">
+       <property name="minimum"><double>0.000000000000000</double></property>
+       <property name="maximum"><double>85.000000000000000</double></property>
+       <property name="singleStep"><double>1.000000000000000</double></property>
+       <property name="value"><double>35.000000000000000</double></property>
+      </widget>
+     </item>
+     <item row="7" column="0">
+      <widget class="QLabel" name="label_orbit_vel">
+       <property name="text"><string>Orbital velocity (rad/s)</string></property>
+      </widget>
+     </item>
+     <item row="7" column="1">
+      <widget class="QDoubleSpinBox" name="orbital_velocity">
+       <property name="minimum"><double>0.010000000000000</double></property>
+       <property name="maximum"><double>20.000000000000000</double></property>
+       <property name="singleStep"><double>0.100000000000000</double></property>
+       <property name="value"><double>2.000000000000000</double></property>
+      </widget>
+     </item>
+     <item row="8" column="0" colspan="2">
+      <widget class="QCheckBox" name="gravity_enabled">
+       <property name="text"><string>Earth-like gravity enabled</string></property>
+       <property name="checked"><bool>true</bool></property>
+      </widget>
+     </item>
+     <item row="9" column="0">
+      <widget class="QLabel" name="label_release_delay">
+       <property name="text"><string>Release delay (s)</string></property>
+      </widget>
+     </item>
+     <item row="9" column="1">
+      <widget class="QDoubleSpinBox" name="release_delay_s">
+       <property name="minimum"><double>0.000000000000000</double></property>
+       <property name="maximum"><double>30.000000000000000</double></property>
+       <property name="singleStep"><double>0.100000000000000</double></property>
+       <property name="value"><double>4.000000000000000</double></property>
+      </widget>
+     </item>
+     <item row="10" column="0">
+      <widget class="QLabel" name="label_post_release">
+       <property name="text"><string>Post-release stop delay (s)</string></property>
+      </widget>
+     </item>
+     <item row="10" column="1">
+      <widget class="QDoubleSpinBox" name="post_release_stop_delay_s">
+       <property name="minimum"><double>0.000000000000000</double></property>
+       <property name="maximum"><double>30.000000000000000</double></property>
+       <property name="singleStep"><double>0.100000000000000</double></property>
+       <property name="value"><double>3.000000000000000</double></property>
       </widget>
      </item>
     </layout>

@@ -65,7 +65,10 @@ bool synthetic_tracker::get_highrate_samples(std::vector<highrate_pose_sample>& 
 }
 
 void synthetic_tracker::fill_pose(double t_seconds, synthetic_preset preset, double translation_amplitude,
-                                  double rotation_amplitude, double frequency_hz, double* pose)
+                                  double rotation_amplitude, double frequency_hz,
+                                  double orbit_tilt_deg, double orbital_velocity,
+                                  bool gravity_enabled, double release_delay_s,
+                                  double post_release_stop_delay_s, double* pose)
 {
     std::fill(pose, pose + 6, 0.0);
 
@@ -73,6 +76,9 @@ void synthetic_tracker::fill_pose(double t_seconds, synthetic_preset preset, dou
     const double omega = 2.0 * M_PI * frequency_hz;
     const double s1 = std::sin(omega * t_seconds);
     const double c1 = std::cos(omega * t_seconds);
+    const double tilt = orbit_tilt_deg * M_PI / 180.0;
+    const double ctilt = std::cos(tilt);
+    const double stilt = std::sin(tilt);
 
     switch (preset)
     {
@@ -99,6 +105,44 @@ void synthetic_tracker::fill_pose(double t_seconds, synthetic_preset preset, dou
         case preset_step_yaw:
             pose[Yaw] = rotation_amplitude * square_wave(phase);
             break;
+        case preset_orbit_release:
+        {
+            const double radius = std::max(translation_amplitude, 0.01);
+            const double w = std::max(orbital_velocity, 0.01);
+            const double g = gravity_enabled ? 9.81 : 0.0;
+
+            const double theta_release = w * std::max(release_delay_s, 0.0);
+            const double x0 = radius * std::cos(theta_release);
+            const double y0 = radius * std::sin(theta_release) * ctilt;
+            const double z0 = radius * std::sin(theta_release) * stilt;
+            const double vx0 = -radius * w * std::sin(theta_release);
+            const double vy0 = radius * w * std::cos(theta_release) * ctilt;
+            const double vz0 = radius * w * std::cos(theta_release) * stilt;
+
+            if (t_seconds <= release_delay_s)
+            {
+                const double theta = w * t_seconds;
+                pose[TX] = radius * std::cos(theta);
+                pose[TY] = radius * std::sin(theta) * ctilt;
+                pose[TZ] = radius * std::sin(theta) * stilt;
+            }
+            else
+            {
+                const double dt_rel = t_seconds - release_delay_s;
+                const double dt_cap = std::max(post_release_stop_delay_s, 0.0);
+                const double dt = std::min(dt_rel, dt_cap);
+                pose[TX] = x0 + vx0 * dt;
+                pose[TY] = y0 + vy0 * dt - 0.5 * g * dt * dt;
+                pose[TZ] = z0 + vz0 * dt;
+            }
+
+            // Orient approximately along instantaneous tangential velocity before release.
+            const double t_eval = t_seconds <= release_delay_s ? t_seconds : release_delay_s;
+            const double vx = t_seconds <= release_delay_s ? (-radius * w * std::sin(w * t_eval)) : vx0;
+            const double vz = t_seconds <= release_delay_s ? (radius * w * std::cos(w * t_eval) * stilt) : vz0;
+            pose[Yaw] = rotation_amplitude * std::atan2(vx, std::max(std::fabs(vz), 1e-6)) / (M_PI * 0.5);
+            break;
+        }
         default:
             pose[TZ] = translation_amplitude * s1;
             break;
@@ -150,6 +194,11 @@ void synthetic_tracker::run()
                   (double)s.translation_amplitude,
                   (double)s.rotation_amplitude,
                   (double)s.frequency_hz,
+                  (double)s.orbit_tilt_deg,
+                  (double)s.orbital_velocity,
+                  (bool)s.gravity_enabled,
+                  (double)s.release_delay_s,
+                  (double)s.post_release_stop_delay_s,
                   pose);
         apply_output_mode(pose, (synthetic_output_mode)(int)s.output_mode);
 

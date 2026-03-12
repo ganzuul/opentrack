@@ -31,6 +31,11 @@ struct settings_alpha_spectrum : opts
     value<slider_value> mtm_shoulder_base;
     value<slider_value> ngc_kappa;
     value<slider_value> ngc_nominal_z;
+    value<slider_value> anti_inertia_budget_max;
+    value<slider_value> anti_inertia_recovery_rate;
+    value<slider_value> anomaly_threshold;
+    value<slider_value> invariant_correction_gain;
+    value<slider_value> predictive_translation_gain;
 
     settings_alpha_spectrum() :
         opts("alpha-spectrum-filter"),
@@ -53,7 +58,12 @@ struct settings_alpha_spectrum : opts
         predictive_head_gain(b, "predictive-head-gain", { 1.0, 0.0, 2.0 }),
         mtm_shoulder_base(b, "mtm-shoulder-base", { 0.5, 0.0, 1.0 }),
         ngc_kappa(b, "ngc-kappa", { 0.078, 0.0, 0.3 }),
-        ngc_nominal_z(b, "ngc-nominal-z", { 0.85, 0.3, 2.0 })
+        ngc_nominal_z(b, "ngc-nominal-z", { 0.85, 0.3, 2.0 }),
+        anti_inertia_budget_max(b, "anti-inertia-budget-max", { 1.0, 0.1, 5.0 }),
+        anti_inertia_recovery_rate(b, "anti-inertia-recovery-rate", { 0.15, 0.01, 2.0 }),
+        anomaly_threshold(b, "anomaly-threshold", { 1.5, 0.1, 10.0 }),
+        invariant_correction_gain(b, "invariant-correction-gain", { 0.0, 0.0, 2.0 }),
+        predictive_translation_gain(b, "predictive-translation-gain", { 1.0, 0.0, 2.0 })
     {
     }
 };
