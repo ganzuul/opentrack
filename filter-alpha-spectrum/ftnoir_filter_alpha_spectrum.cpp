@@ -310,7 +310,7 @@ void alpha_spectrum::filter(const double* input, double* output)
     const double ngc_kappa = *s.ngc_kappa;
     const double ngc_nominal_z = *s.ngc_nominal_z;
 
-    // NGC depth-commutator lift: isolate Z torsion from XY radial geometry.
+    // NGC depth-commutator lift: keep measured depth on TZ and use torsion as residual coupling only.
     std::array<double, 3> bifurcated_pos {input[TX], input[TY], input[TZ]};
     {
         const double raw_x = input[TX];
@@ -324,7 +324,7 @@ void alpha_spectrum::filter(const double* input, double* output)
         const double kappa = ngc_kappa * ((apparent_scale - 1.0) / (nominal_depth * nominal_depth));
         const double depth_torsion = 0.5 * (kappa * radial_xy);
 
-        bifurcated_pos = {raw_x, raw_y, depth_torsion};
+        bifurcated_pos = {raw_x, raw_y, input[TZ]};
         coupling_residual = std::clamp(std::fabs(depth_torsion), 0.0, 3.0);
     }
 

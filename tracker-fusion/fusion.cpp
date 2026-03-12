@@ -15,6 +15,7 @@
 #include <QMessageBox>
 #include <QApplication>
 #include <algorithm>
+#include <cmath>
 #include <cassert>
 
 static const char* own_name = "fusion";
@@ -170,6 +171,29 @@ void fusion_tracker::data(double *data)
                     data[k] = latest_sample.pose[k];
                     rot_tracker_data[k] = latest_sample.pose[k];
                 }
+
+                // Safeguard: if position source is effectively flat while rotation source
+                // carries real translation, forward translation from rotation source.
+                // This prevents frozen TZ in edge cases where tracker roles are misrouted.
+                const double pos_norm = std::hypot(pos_tracker_data[0], std::hypot(pos_tracker_data[1], pos_tracker_data[2]));
+                const double rot_norm = std::hypot(latest_sample.pose[0], std::hypot(latest_sample.pose[1], latest_sample.pose[2]));
+                if (pos_norm < 1e-5 && rot_norm > 1e-4)
+                {
+                    for (unsigned k = 0; k < 3; k++)
+                        data[k] = latest_sample.pose[k];
+                }
+            }
+        }
+
+        if (!s.enable_highrate_mode)
+        {
+            // Same safeguard for non-high-rate mode using direct rotation tracker sample.
+            const double pos_norm = std::hypot(pos_tracker_data[0], std::hypot(pos_tracker_data[1], pos_tracker_data[2]));
+            const double rot_norm = std::hypot(rot_tracker_data[0], std::hypot(rot_tracker_data[1], rot_tracker_data[2]));
+            if (pos_norm < 1e-5 && rot_norm > 1e-4)
+            {
+                for (unsigned k = 0; k < 3; k++)
+                    data[k] = rot_tracker_data[k];
             }
         }
     }

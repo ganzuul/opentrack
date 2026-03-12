@@ -54,5 +54,21 @@
         <source>Position</source>
         <translation>位置</translation>
     </message>
+    <message>
+        <source>Enable high-rate mode (1000Hz polling for rotation tracker)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>When enabled, rotation tracker (e.g. OpenHMD IMU) is polled at 1000Hz in a separate thread, providing high-rate data for sensor fusion.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Buffer size (ms)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>How many milliseconds of high-rate samples to buffer for filter access</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 </TS>
