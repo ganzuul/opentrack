@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>synthetic_ui</class>
+ <widget class="QWidget" name="synthetic_ui">
+  <property name="windowTitle">
+   <string>Synthetic Test Tracker</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <layout class="QFormLayout" name="formLayout">
+     <item row="0" column="0">
+      <widget class="QLabel" name="label_preset">
+       <property name="text">
+        <string>Preset</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QComboBox" name="preset">
+       <item><property name="text"><string>Depth sine</string></property></item>
+       <item><property name="text"><string>Depth ramp</string></property></item>
+       <item><property name="text"><string>Yaw sine</string></property></item>
+       <item><property name="text"><string>Orbit 6DOF</string></property></item>
+       <item><property name="text"><string>Step depth</string></property></item>
+       <item><property name="text"><string>Step yaw</string></property></item>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="label_output">
+       <property name="text"><string>Output track</string></property>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QComboBox" name="output_mode">
+       <item><property name="text"><string>Full 6DOF</string></property></item>
+       <item><property name="text"><string>Position only</string></property></item>
+       <item><property name="text"><string>Rotation only</string></property></item>
+      </widget>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="label_rate">
+       <property name="text"><string>Sample rate (Hz)</string></property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QSpinBox" name="sample_rate_hz">
+       <property name="minimum"><number>30</number></property>
+       <property name="maximum"><number>1000</number></property>
+       <property name="value"><number>250</number></property>
+      </widget>
+     </item>
+     <item row="3" column="0">
+      <widget class="QLabel" name="label_t_amp">
+       <property name="text"><string>Translation amplitude</string></property>
+      </widget>
+     </item>
+     <item row="3" column="1">
+      <widget class="QDoubleSpinBox" name="translation_amplitude">
+       <property name="minimum"><double>0.000000000000000</double></property>
+       <property name="maximum"><double>200.000000000000000</double></property>
+       <property name="value"><double>15.000000000000000</double></property>
+      </widget>
+     </item>
+     <item row="4" column="0">
+      <widget class="QLabel" name="label_r_amp">
+       <property name="text"><string>Rotation amplitude</string></property>
+      </widget>
+     </item>
+     <item row="4" column="1">
+      <widget class="QDoubleSpinBox" name="rotation_amplitude">
+       <property name="minimum"><double>0.000000000000000</double></property>
+       <property name="maximum"><double>180.000000000000000</double></property>
+       <property name="value"><double>45.000000000000000</double></property>
+      </widget>
+     </item>
+     <item row="5" column="0">
+      <widget class="QLabel" name="label_freq">
+       <property name="text"><string>Frequency (Hz)</string></property>
+      </widget>
+     </item>
+     <item row="5" column="1">
+      <widget class="QDoubleSpinBox" name="frequency_hz">
+       <property name="minimum"><double>0.010000000000000</double></property>
+       <property name="maximum"><double>10.000000000000000</double></property>
+       <property name="singleStep"><double>0.050000000000000</double></property>
+       <property name="value"><double>0.500000000000000</double></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
