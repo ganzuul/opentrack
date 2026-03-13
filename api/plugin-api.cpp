@@ -33,6 +33,8 @@ Metadata::Metadata() = default;
 Metadata::~Metadata() = default;
 IHighrateSource::IHighrateSource() = default;
 IHighrateSource::~IHighrateSource() = default;
+IExperimentSource::IExperimentSource() = default;
+IExperimentSource::~IExperimentSource() = default;
 
 IFilter::IFilter() = default;
 IFilter::~IFilter() = default;

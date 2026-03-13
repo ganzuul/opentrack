@@ -459,7 +459,8 @@ void main_window::start_tracker_()
 #else
     auto* frame = &fake_video_frame;
 #endif
-    work = std::make_shared<Work>(pose, frame, current_tracker(), current_protocol(), current_filter());
+    work = std::make_shared<Work>(pose, frame, current_tracker(), current_protocol(), current_filter(),
+                                  [this] { stop_tracker(); });
 
     if (!work->is_ok())
     {

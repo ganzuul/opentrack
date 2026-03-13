@@ -38,6 +38,10 @@ module_status synthetic_tracker::start_tracker(QFrame*)
         QMutexLocker sample_lock(&sample_mutex);
         pending_samples.clear();
     }
+    {
+        QMutexLocker experiment_lock(&experiment_mutex);
+        experiment_status = {};
+    }
     start();
     return status_ok();
 }
@@ -62,6 +66,13 @@ bool synthetic_tracker::get_highrate_samples(std::vector<highrate_pose_sample>& 
         pending_samples.pop_front();
     }
     return true;
+}
+
+bool synthetic_tracker::get_experiment_status(experiment_status_sample& out)
+{
+    QMutexLocker lock(&experiment_mutex);
+    out = experiment_status;
+    return out.active || out.complete;
 }
 
 void synthetic_tracker::fill_pose(double t_seconds, synthetic_preset preset, double translation_amplitude,
@@ -201,6 +212,29 @@ void synthetic_tracker::run()
                   (double)s.post_release_stop_delay_s,
                   pose);
         apply_output_mode(pose, (synthetic_output_mode)(int)s.output_mode);
+
+        {
+            QMutexLocker experiment_lock(&experiment_mutex);
+            experiment_status = {};
+            if ((synthetic_preset)(int)s.preset == preset_orbit_release)
+            {
+                const double expected_duration =
+                    std::max(0.0, (double)s.release_delay_s) + std::max(0.0, (double)s.post_release_stop_delay_s);
+                experiment_status.active = true;
+                experiment_status.elapsed_seconds = t_seconds;
+                experiment_status.expected_duration_seconds = expected_duration;
+                experiment_status.expected_rows = int(std::llround(expected_duration * 250.0));
+                if (t_seconds < (double)s.release_delay_s)
+                    experiment_status.phase = experiment_phase::orbiting;
+                else if (t_seconds < expected_duration)
+                    experiment_status.phase = experiment_phase::released;
+                else
+                {
+                    experiment_status.phase = experiment_phase::complete;
+                    experiment_status.complete = true;
+                }
+            }
+        }
 
         {
             QMutexLocker pose_lock(&pose_mutex);

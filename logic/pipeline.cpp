@@ -443,8 +443,14 @@ void pipeline::logic()
 {
     using namespace euler;
 
-    logger.write_dt();
+    const double frame_dt = logger.write_dt();
     logger.reset_dt();
+
+    double corrected_pose[6] {};
+    double filtered_pose[6] {};
+    double mapped_pose[6] {};
+    double diag_vals[16] {};
+    int diag_count = 0;
 
     // we must center prior to getting data from the tracker
     const bool center_ordered = b.get(f_center | f_held_center) && tracking_started;
@@ -480,6 +486,8 @@ void pipeline::logic()
 
         // "corrected" - after various transformations to account for camera position
         logger.write_pose(value);
+        for (int i = 0; i < 6; i++)
+            corrected_pose[i] = value(i);
     }
 
     {
@@ -491,13 +499,14 @@ void pipeline::logic()
             value = maybe_apply_filter(value);
         nan_check(value);
         logger.write_pose(value); // "filtered"
+        for (int i = 0; i < 6; i++)
+            filtered_pose[i] = value(i);
         // extra filter diagnostic columns per frame
         if (libs.pFilter)
         {
-            double diag_vals[16] {};
-            const int ndiag = libs.pFilter->diagnostics(diag_vals, 16);
-            if (ndiag > 0)
-                logger.write(diag_vals, ndiag);
+            diag_count = libs.pFilter->diagnostics(diag_vals, 16);
+            if (diag_count > 0)
+                logger.write(diag_vals, diag_count);
         }
     }
 
@@ -559,6 +568,48 @@ ok:
     }
 
     logger.write_pose(value); // "mapped"
+    for (int i = 0; i < 6; i++)
+        mapped_pose[i] = value(i);
+
+    if (libs.pExperimentSource)
+    {
+        experiment_status_sample experiment_status;
+        if (libs.pExperimentSource->get_experiment_status(experiment_status))
+        {
+            if (!experiment_started)
+            {
+                libs.pProtocol->experiment_begin(experiment_status,
+                                                 experiment_diag_names.data(),
+                                                 experiment_diag_count);
+                experiment_started = true;
+            }
+
+            experiment_t_cumulative += frame_dt;
+            experiment_row_index++;
+
+            experiment_frame_record rec;
+            rec.dt_seconds = frame_dt;
+            rec.t_cumulative_seconds = experiment_t_cumulative;
+            rec.row_index = experiment_row_index;
+            rec.experiment = experiment_status;
+            for (int i = 0; i < 6; i++)
+            {
+                rec.raw_pose[i] = raw(i);
+                rec.corrected_pose[i] = corrected_pose[i];
+                rec.filtered_pose[i] = filtered_pose[i];
+                rec.mapped_pose[i] = mapped_pose[i];
+            }
+
+            libs.pProtocol->experiment_frame(rec, diag_vals, diag_count);
+
+            if (experiment_status.complete && !experiment_finished)
+            {
+                libs.pProtocol->experiment_end(experiment_status, "completed");
+                experiment_finished = true;
+                requestInterruption();
+            }
+        }
+    }
 
     logger.reset_dt();
     logger.next_line();
@@ -629,10 +680,9 @@ void pipeline::run()
         // extra filter diagnostic columns (no-op if filter doesn't implement diagnostics)
         if (libs.pFilter)
         {
-            const char* diag_names[16] {};
-            const int ndiag = libs.pFilter->diagnostics_names(diag_names, 16);
-            for (int k = 0; k < ndiag; ++k)
-                logger.write(diag_names[k]);
+            experiment_diag_count = libs.pFilter->diagnostics_names(experiment_diag_names.data(), 16);
+            for (int k = 0; k < experiment_diag_count; ++k)
+                logger.write(experiment_diag_names[k]);
         }
         logger.next_line();
     }
@@ -662,6 +712,15 @@ void pipeline::run()
         debug_timings(backlog_time.count(), sleep_ms);
 #endif
         portable::sleep(sleep_ms);
+    }
+
+    if (experiment_started && !experiment_finished)
+    {
+        experiment_status_sample experiment_status;
+        if (libs.pExperimentSource)
+            (void)libs.pExperimentSource->get_experiment_status(experiment_status);
+        libs.pProtocol->experiment_end(experiment_status, "interrupted");
+        experiment_finished = true;
     }
 
     // filter may inhibit exact origin

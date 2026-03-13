@@ -22,7 +22,7 @@ public:
     void write_pose(const double *p);
 
     void reset_dt();
-    void write_dt();
+    double write_dt();
 };
 
 

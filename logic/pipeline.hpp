@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <array>
 
 #include "compat/timer.hpp"
 #include "api/plugin-support.hpp"
@@ -104,6 +105,12 @@ class OTR_LOGIC_EXPORT pipeline : private QThread
     } center;
 
     time_units::ms backlog_time {};
+    double experiment_t_cumulative = 0.0;
+    int experiment_row_index = 0;
+    int experiment_diag_count = 0;
+    std::array<const char*, 16> experiment_diag_names {};
+    bool experiment_started = false;
+    bool experiment_finished = false;
 
     bool tracking_started = false;
 

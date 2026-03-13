@@ -9,8 +9,11 @@
 #pragma once
 
 #include "api/plugin-support.hpp"
+#include "api/plugin-api.hpp"
 #include "compat/tr.hpp"
 #include "export.hpp"
+
+#include <functional>
 
 class QFrame;
 
@@ -24,8 +27,11 @@ public:
     std::shared_ptr<ITracker> pTracker;
     std::shared_ptr<IFilter> pFilter;
     std::shared_ptr<IProtocol> pProtocol;
+    IExperimentSource* pExperimentSource = nullptr;
+    std::function<void()> request_stop;
 
-    runtime_libraries(QFrame* frame, dylibptr t, dylibptr p, dylibptr f);
+    runtime_libraries(QFrame* frame, dylibptr t, dylibptr p, dylibptr f,
+                      std::function<void()> request_stop = {});
     runtime_libraries() = default;
 
     bool correct = false;

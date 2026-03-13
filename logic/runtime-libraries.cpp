@@ -7,8 +7,10 @@
 #   pragma clang diagnostic ignored "-Wcomma"
 #endif
 
-runtime_libraries::runtime_libraries(QFrame* frame, dylibptr t, dylibptr p, dylibptr f)
+runtime_libraries::runtime_libraries(QFrame* frame, dylibptr t, dylibptr p, dylibptr f,
+                                     std::function<void()> request_stop_)
 {
+    request_stop = std::move(request_stop_);
     auto error = [](const QString& msg) { return module_status_mixin::error(msg); };
 
     module_status status =
@@ -65,6 +67,8 @@ runtime_libraries::runtime_libraries(QFrame* frame, dylibptr t, dylibptr p, dyli
 
     if (pFilter)
         pFilter->set_tracker(&*pTracker);
+
+    pExperimentSource = dynamic_cast<IExperimentSource*>(&*pTracker);
 
     correct = true;
     return;

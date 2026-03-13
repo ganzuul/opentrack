@@ -39,6 +39,8 @@ fusion_tracker::~fusion_tracker()
     // CAVEAT order matters
     rot_tracker = nullptr;
     pos_tracker = nullptr;
+    rot_experiment_source = nullptr;
+    pos_experiment_source = nullptr;
 
     rot_dylib = nullptr;
     pos_dylib = nullptr;
@@ -100,6 +102,8 @@ module_status fusion_tracker::start_tracker(QFrame* frame)
 
     rot_tracker = make_dylib_instance<ITracker>(rot_dylib);
     pos_tracker = make_dylib_instance<ITracker>(pos_dylib);
+    rot_experiment_source = dynamic_cast<IExperimentSource*>(&*rot_tracker);
+    pos_experiment_source = dynamic_cast<IExperimentSource*>(&*pos_tracker);
 
     status = pos_tracker->start_tracker(frame);
 
@@ -363,6 +367,36 @@ bool fusion_tracker::get_highrate_samples(std::vector<highrate_pose_sample>& out
 
     last_highrate_export_time = timed_samples.back().timestamp;
     return true;
+}
+
+bool fusion_tracker::get_experiment_status(experiment_status_sample& out)
+{
+    experiment_status_sample pos_status;
+    experiment_status_sample rot_status;
+    const bool has_pos = pos_experiment_source && pos_experiment_source->get_experiment_status(pos_status);
+    const bool has_rot = rot_experiment_source && rot_experiment_source->get_experiment_status(rot_status);
+
+    if (has_pos && has_rot)
+    {
+        if (pos_status.active || pos_status.complete)
+            out = pos_status;
+        else
+            out = rot_status;
+        return true;
+    }
+
+    if (has_pos)
+    {
+        out = pos_status;
+        return true;
+    }
+    if (has_rot)
+    {
+        out = rot_status;
+        return true;
+    }
+
+    return false;
 }
 
 OPENTRACK_DECLARE_TRACKER(fusion_tracker, fusion_dialog, fusion_metadata)

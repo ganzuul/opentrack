@@ -60,7 +60,8 @@ public:
     };
 
     Work(const Mappings& m, QFrame* frame,
-         const dylibptr& tracker, const dylibptr& filter, const dylibptr& proto);
+            const dylibptr& tracker, const dylibptr& filter, const dylibptr& proto,
+            std::function<void()> request_stop = {});
     void reload_shortcuts();
     bool is_ok() const;
 };

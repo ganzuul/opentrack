@@ -58,8 +58,9 @@ std::unique_ptr<TrackLogger> Work::make_logger(main_settings &s)
 
 
 Work::Work(const Mappings& m, QFrame* frame,
-           const dylibptr& tracker, const dylibptr& filter, const dylibptr& proto) :
-    libs(frame, tracker, filter, proto),
+           const dylibptr& tracker, const dylibptr& filter, const dylibptr& proto,
+           std::function<void()> request_stop) :
+    libs(frame, tracker, filter, proto, std::move(request_stop)),
     pipeline_{ m, libs, *logger }
 {
     if (!is_ok())

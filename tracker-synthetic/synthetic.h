@@ -61,7 +61,7 @@ struct synthetic_settings : opts {
     {}
 };
 
-class synthetic_tracker : protected QThread, public ITracker, public IHighrateSource
+class synthetic_tracker : protected QThread, public ITracker, public IHighrateSource, public IExperimentSource
 {
     Q_OBJECT
 public:
@@ -71,6 +71,7 @@ public:
     module_status start_tracker(QFrame* frame) override;
     void data(double* data) override;
     bool get_highrate_samples(std::vector<highrate_pose_sample>& out) override;
+    bool get_experiment_status(experiment_status_sample& out) override;
 
 protected:
     void run() override;
@@ -86,7 +87,9 @@ private:
     synthetic_settings s;
     QMutex pose_mutex;
     QMutex sample_mutex;
+    QMutex experiment_mutex;
     double last_pose[6] {};
+    experiment_status_sample experiment_status;
     std::deque<highrate_pose_sample> pending_samples;
     volatile bool should_quit = false;
 };

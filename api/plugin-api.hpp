@@ -43,6 +43,36 @@ struct OTR_API_EXPORT highrate_pose_sample
     int source_id = 0;
 };
 
+enum class experiment_phase : int
+{
+    inactive = 0,
+    orbiting,
+    released,
+    complete,
+};
+
+struct OTR_API_EXPORT experiment_status_sample
+{
+    bool active = false;
+    bool complete = false;
+    double elapsed_seconds = 0.0;
+    double expected_duration_seconds = 0.0;
+    int expected_rows = 0;
+    experiment_phase phase = experiment_phase::inactive;
+};
+
+struct OTR_API_EXPORT experiment_frame_record
+{
+    double dt_seconds = 0.0;
+    double t_cumulative_seconds = 0.0;
+    int row_index = 0;
+    double raw_pose[Axis_COUNT] {};
+    double corrected_pose[Axis_COUNT] {};
+    double filtered_pose[Axis_COUNT] {};
+    double mapped_pose[Axis_COUNT] {};
+    experiment_status_sample experiment {};
+};
+
 struct OTR_API_EXPORT IHighrateSource
 {
     IHighrateSource();
@@ -50,6 +80,14 @@ struct OTR_API_EXPORT IHighrateSource
 
     // Returns true if one or more samples were appended to `out`.
     virtual bool get_highrate_samples(std::vector<highrate_pose_sample>& out) = 0;
+};
+
+struct OTR_API_EXPORT IExperimentSource
+{
+    IExperimentSource();
+    virtual ~IExperimentSource();
+
+    virtual bool get_experiment_status(experiment_status_sample& out) = 0;
 };
 
 namespace plugin_api::detail {
@@ -198,6 +236,13 @@ struct OTR_API_EXPORT IProtocol : module_status_mixin
     virtual void pose(const double* pose, const double* raw) = 0;
     // return game name or placeholder text
     virtual QString game_name() = 0;
+
+    // optional rich experiment collection hooks
+    virtual void experiment_begin(const experiment_status_sample&,
+                                  const char* const*, int) {}
+    virtual void experiment_frame(const experiment_frame_record&,
+                                  const double*, int) {}
+    virtual void experiment_end(const experiment_status_sample&, const char*) {}
 };
 
 struct OTR_API_EXPORT IProtocolDialog : public plugin_api::detail::BaseDialog

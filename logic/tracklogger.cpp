@@ -15,10 +15,11 @@ void TrackLogger::reset_dt()
     t.start();
 }
 
-void TrackLogger::write_dt()
+double TrackLogger::write_dt()
 {
     const double dt = t.elapsed_seconds();
     write(&dt, 1);
+    return dt;
 }
 
 void TrackLoggerCSV::handle_first_col_sep()

@@ -57,7 +57,7 @@ public:
     void stop();
 };
 
-class fusion_tracker : public QObject, public ITracker, public IHighrateSource
+class fusion_tracker : public QObject, public ITracker, public IHighrateSource, public IExperimentSource
 {
     Q_OBJECT
 
@@ -66,6 +66,8 @@ class fusion_tracker : public QObject, public ITracker, public IHighrateSource
     std::unique_ptr<QFrame> other_frame { std::make_unique<QFrame>() };
     std::shared_ptr<dylib> rot_dylib, pos_dylib;
     std::shared_ptr<ITracker> rot_tracker, pos_tracker;
+    IExperimentSource* rot_experiment_source = nullptr;
+    IExperimentSource* pos_experiment_source = nullptr;
     
     // High-rate mode support
     std::unique_ptr<highrate_poller> rot_poller;
@@ -78,6 +80,7 @@ public:
     module_status start_tracker(QFrame*) override;
     void data(double* data) override;
     bool get_highrate_samples(std::vector<highrate_pose_sample>& out) override;
+    bool get_experiment_status(experiment_status_sample& out) override;
     
     // Extended interface for high-rate data access
     bool has_highrate_data() const { return rot_poller != nullptr; }
