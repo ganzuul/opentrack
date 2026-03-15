@@ -9,6 +9,11 @@
 #include <array>
 #include <chrono>
 
+class QProgressBar;
+class QLabel;
+class QComboBox;
+class QWidget;
+
 namespace detail::alpha_spectrum {
 
 enum class tracking_head : size_t {
@@ -16,6 +21,8 @@ enum class tracking_head : size_t {
     brownian,
     adaptive,
     predictive,
+    chi_square,
+    pareto,
     head_count
 };
 
@@ -57,6 +64,7 @@ struct temporal_economy_state final
 // Note: this is runtime status, not persistent profile state.
 struct calibration_status final
 {
+    static constexpr int bin_count = 12;
     std::atomic<bool> ui_open {false};
     std::atomic<bool> active {false};
     std::atomic<double> rot_objective {0.0};
@@ -77,16 +85,22 @@ struct calibration_status final
     std::atomic<double> rot_brownian_drive {0.0};
     std::atomic<double> rot_adaptive_drive {0.0};
     std::atomic<double> rot_predictive_drive {0.0};
+    std::atomic<double> rot_chi_square_drive {0.0};
+    std::atomic<double> rot_pareto_drive {0.0};
     std::atomic<double> rot_mtm_drive {0.0};
     std::atomic<double> pos_ema_drive {0.0};
     std::atomic<double> pos_brownian_drive {0.0};
     std::atomic<double> pos_adaptive_drive {0.0};
     std::atomic<double> pos_predictive_drive {0.0};
+    std::atomic<double> pos_chi_square_drive {0.0};
+    std::atomic<double> pos_pareto_drive {0.0};
     std::atomic<double> pos_mtm_drive {0.0};
     std::atomic<double> rot_mode_expectation {0.0};
     std::atomic<double> pos_mode_expectation {0.0};
     std::atomic<double> rot_mode_peak {0.0};
     std::atomic<double> pos_mode_peak {0.0};
+    std::atomic<double> rot_mode_purity {0.0};
+    std::atomic<double> pos_mode_purity {0.0};
     std::atomic<double> ngc_coupling_residual {0.0};
     std::atomic<double> rot_alpha_min {.04};
     std::atomic<double> rot_alpha_max {.65};
@@ -98,12 +112,56 @@ struct calibration_status final
     std::atomic<double> pos_deadzone {.1};
     std::atomic<double> anti_inertia_budget {1.0};
     std::atomic<double> anomaly_score {0.0};
+    std::atomic<double> outlier_quarantine_activity {0.0};
     std::atomic<double> pos_predictive_translation_error {0.0};
     std::atomic<double> invariant_correction_magnitude {0.0};
     std::atomic<bool> anomaly_active {false};
+    std::array<std::atomic<double>, bin_count> rot_bin_prob {};
+    std::array<std::atomic<double>, bin_count> pos_bin_prob {};
+    std::array<std::atomic<double>, bin_count> rot_bin_delta {};
+    std::array<std::atomic<double>, bin_count> pos_bin_delta {};
+    std::array<std::atomic<double>, bin_count> rot_bin_conflict {};
+    std::array<std::atomic<double>, bin_count> pos_bin_conflict {};
+    std::array<std::atomic<double>, bin_count> rot_bin_pathology {};
+    std::array<std::atomic<double>, bin_count> pos_bin_pathology {};
+
+    calibration_status()
+    {
+        for (auto& x : rot_bin_prob)
+            x.store(0.0, std::memory_order_relaxed);
+        for (auto& x : pos_bin_prob)
+            x.store(0.0, std::memory_order_relaxed);
+        for (auto& x : rot_bin_delta)
+            x.store(0.0, std::memory_order_relaxed);
+        for (auto& x : pos_bin_delta)
+            x.store(0.0, std::memory_order_relaxed);
+        for (auto& x : rot_bin_conflict)
+            x.store(0.0, std::memory_order_relaxed);
+        for (auto& x : pos_bin_conflict)
+            x.store(0.0, std::memory_order_relaxed);
+        for (auto& x : rot_bin_pathology)
+            x.store(0.0, std::memory_order_relaxed);
+        for (auto& x : pos_bin_pathology)
+            x.store(0.0, std::memory_order_relaxed);
+    }
 };
 
 calibration_status& shared_calibration_status();
+
+struct quality_overlay_state final
+{
+    static constexpr int value_count = 10;
+    std::atomic<bool> active {false};
+    std::array<std::atomic<double>, value_count> delta {};
+
+    quality_overlay_state()
+    {
+        for (auto& x : delta)
+            x.store(0.0, std::memory_order_relaxed);
+    }
+};
+
+quality_overlay_state& shared_quality_overlay_state();
 
 } // ns detail::alpha_spectrum
 
@@ -123,8 +181,8 @@ private:
     // - MTM-style probability diffusion + measurement likelihood update
     // - Brownian status for raw vs filtered noise-energy contribution
     static constexpr int axis_count = 6;
-    static constexpr int mode_count = 7;
-    static constexpr int hydra_head_capacity = 4;
+    static constexpr int mode_count = 12;
+    static constexpr int hydra_head_capacity = 6;
     static constexpr double delta_rc = 1. / 90.;
     static constexpr double activity_rc = .35;
     static constexpr double adaptive_boost = .4;
@@ -166,6 +224,8 @@ private:
     translational_predictive_state translation_state;
     std::array<double, mode_count> rot_mode_prob {};
     std::array<double, mode_count> pos_mode_prob {};
+    std::array<double, mode_count> last_rot_mode_prob_snapshot {};
+    std::array<double, mode_count> last_pos_mode_prob_snapshot {};
     detail::alpha_spectrum::temporal_economy_state temporal_state;
     std::array<detail::alpha_spectrum::tracking_head, axis_count> last_dominant_head {
         detail::alpha_spectrum::tracking_head::ema,
@@ -203,6 +263,12 @@ public:
 private:
     Ui::UICdialog_alpha_spectrum ui;
     settings_alpha_spectrum s;
+    QComboBox* ui_mode_combo = nullptr;
+    QWidget* simplified_placeholder = nullptr;
+    QWidget* advanced_canvas = nullptr;
+    QComboBox* heatmap_mode_combo = nullptr;
+    std::array<QLabel*, detail::alpha_spectrum::calibration_status::bin_count> rot_bin_cells {};
+    std::array<QLabel*, detail::alpha_spectrum::calibration_status::bin_count> pos_bin_cells {};
     void pull_status_into_ui(bool commit_to_settings);
     void reset_to_defaults();
 

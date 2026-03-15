@@ -133,15 +133,24 @@
       <item row="3" column="0"><widget class="QLabel" name="predictive_gain_text"><property name="text"><string>Predictive Head Gain</string></property></widget></item>
       <item row="3" column="1"><widget class="QSlider" name="predictive_gain_slider"><property name="maximum"><number>20000</number></property><property name="singleStep"><number>20</number></property><property name="pageStep"><number>200</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
       <item row="3" column="2"><widget class="QLabel" name="predictive_gain_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>1.00x</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
-      <item row="4" column="0"><widget class="QLabel" name="mtm_shoulder_text"><property name="text"><string>MTM Shoulder Base</string></property></widget></item>
-      <item row="4" column="1"><widget class="QSlider" name="mtm_shoulder_slider"><property name="maximum"><number>10000</number></property><property name="singleStep"><number>10</number></property><property name="pageStep"><number>100</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
-      <item row="4" column="2"><widget class="QLabel" name="mtm_shoulder_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>50.0%</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
-      <item row="5" column="0"><widget class="QLabel" name="ngc_kappa_text"><property name="text"><string>NGC Kappa</string></property></widget></item>
-      <item row="5" column="1"><widget class="QSlider" name="ngc_kappa_slider"><property name="maximum"><number>3000</number></property><property name="singleStep"><number>5</number></property><property name="pageStep"><number>50</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
-      <item row="5" column="2"><widget class="QLabel" name="ngc_kappa_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0.078</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
-      <item row="6" column="0"><widget class="QLabel" name="ngc_nominal_z_text"><property name="text"><string>NGC Nominal Z</string></property></widget></item>
-      <item row="6" column="1"><widget class="QSlider" name="ngc_nominal_z_slider"><property name="maximum"><number>17000</number></property><property name="singleStep"><number>20</number></property><property name="pageStep"><number>200</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
-      <item row="6" column="2"><widget class="QLabel" name="ngc_nominal_z_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0.85m</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
+      <item row="4" column="0"><widget class="QLabel" name="chi_square_gain_text"><property name="text"><string>Chi-Square Head Gain</string></property></widget></item>
+      <item row="4" column="1"><widget class="QSlider" name="chi_square_gain_slider"><property name="maximum"><number>20000</number></property><property name="singleStep"><number>20</number></property><property name="pageStep"><number>200</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
+      <item row="4" column="2"><widget class="QLabel" name="chi_square_gain_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>1.00x</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
+      <item row="5" column="0"><widget class="QLabel" name="pareto_gain_text"><property name="text"><string>Pareto Head Gain</string></property></widget></item>
+      <item row="5" column="1"><widget class="QSlider" name="pareto_gain_slider"><property name="maximum"><number>20000</number></property><property name="singleStep"><number>20</number></property><property name="pageStep"><number>200</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
+      <item row="5" column="2"><widget class="QLabel" name="pareto_gain_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>1.00x</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
+      <item row="6" column="0"><widget class="QLabel" name="mtm_shoulder_text"><property name="text"><string>MTM Shoulder Base</string></property></widget></item>
+      <item row="6" column="1"><widget class="QSlider" name="mtm_shoulder_slider"><property name="maximum"><number>10000</number></property><property name="singleStep"><number>10</number></property><property name="pageStep"><number>100</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
+      <item row="6" column="2"><widget class="QLabel" name="mtm_shoulder_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>50.0%</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
+      <item row="7" column="0"><widget class="QLabel" name="ngc_kappa_text"><property name="text"><string>NGC Kappa</string></property></widget></item>
+      <item row="7" column="1"><widget class="QSlider" name="ngc_kappa_slider"><property name="maximum"><number>3000</number></property><property name="singleStep"><number>5</number></property><property name="pageStep"><number>50</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
+      <item row="7" column="2"><widget class="QLabel" name="ngc_kappa_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0.078</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
+      <item row="8" column="0"><widget class="QLabel" name="ngc_nominal_z_text"><property name="text"><string>NGC Nominal Z</string></property></widget></item>
+      <item row="8" column="1"><widget class="QSlider" name="ngc_nominal_z_slider"><property name="maximum"><number>17000</number></property><property name="singleStep"><number>20</number></property><property name="pageStep"><number>200</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
+      <item row="8" column="2"><widget class="QLabel" name="ngc_nominal_z_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0.85m</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
+      <item row="9" column="0"><widget class="QLabel" name="outlier_quarantine_strength_text"><property name="text"><string>Outlier Quarantine Strength</string></property></widget></item>
+      <item row="9" column="1"><widget class="QSlider" name="outlier_quarantine_strength_slider"><property name="maximum"><number>10000</number></property><property name="singleStep"><number>10</number></property><property name="pageStep"><number>100</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
+      <item row="9" column="2"><widget class="QLabel" name="outlier_quarantine_strength_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>60.0%</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
       </layout>
      </widget>
     </item>
@@ -200,6 +209,77 @@
      </widget>
     </item>
     <item>
+     <widget class="QFrame" name="qualities_frame">
+      <property name="frameShape">
+       <enum>QFrame::StyledPanel</enum>
+      </property>
+      <layout class="QVBoxLayout" name="qualities_layout">
+       <item>
+      <widget class="QCheckBox" name="qualities_mode_check">
+       <property name="text">
+        <string>Simplified qualities mode (attitude projection)</string>
+       </property>
+       <property name="checked">
+        <bool>false</bool>
+       </property>
+      </widget>
+       </item>
+       <item>
+      <widget class="QLabel" name="qualities_title_label">
+       <property name="text">
+        <string>Attitudes (active)</string>
+       </property>
+      </widget>
+       </item>
+       <item>
+      <layout class="QGridLayout" name="active_qualities_grid">
+       <item row="0" column="0"><widget class="QCheckBox" name="quality_stillness_check"><property name="text"><string>Stillness</string></property></widget></item>
+       <item row="0" column="1"><widget class="QCheckBox" name="quality_continuity_check"><property name="text"><string>Continuity</string></property></widget></item>
+       <item row="1" column="0"><widget class="QCheckBox" name="quality_robustness_check"><property name="text"><string>Robustness</string></property></widget></item>
+       <item row="1" column="1"><widget class="QCheckBox" name="quality_decisiveness_check"><property name="text"><string>Decisiveness</string></property></widget></item>
+       <item row="2" column="0"><widget class="QCheckBox" name="quality_pathology_defense_check"><property name="text"><string>Pathology Defense</string></property></widget></item>
+       <item row="2" column="1"><widget class="QCheckBox" name="quality_recovery_pace_check"><property name="text"><string>Recovery Pace</string></property></widget></item>
+      </layout>
+       </item>
+       <item>
+      <widget class="QLabel" name="qualities_placeholder_title_label">
+       <property name="text">
+        <string>Qualities (planned placeholders)</string>
+       </property>
+      </widget>
+       </item>
+       <item>
+      <layout class="QGridLayout" name="placeholder_qualities_grid">
+       <item row="0" column="0"><widget class="QCheckBox" name="quality_ballistic_acceptance_placeholder"><property name="enabled"><bool>false</bool></property><property name="text"><string>Ballistic Acceptance</string></property></widget></item>
+       <item row="0" column="1"><widget class="QCheckBox" name="quality_quarantine_aggression_placeholder"><property name="enabled"><bool>false</bool></property><property name="text"><string>Quarantine Aggression</string></property></widget></item>
+       <item row="1" column="0"><widget class="QCheckBox" name="quality_true_death_trigger_placeholder"><property name="enabled"><bool>false</bool></property><property name="text"><string>True-Death Trigger</string></property></widget></item>
+       <item row="1" column="1"><widget class="QCheckBox" name="quality_reentry_gentleness_placeholder"><property name="enabled"><bool>false</bool></property><property name="text"><string>Re-entry Gentleness</string></property></widget></item>
+       <item row="2" column="0"><widget class="QCheckBox" name="quality_entropic_permeability_placeholder"><property name="enabled"><bool>false</bool></property><property name="text"><string>Entropic Permeability</string></property></widget></item>
+       <item row="2" column="1"><widget class="QCheckBox" name="quality_morphic_coherence_placeholder"><property name="enabled"><bool>false</bool></property><property name="text"><string>Morphic Coherence</string></property></widget></item>
+       <item row="3" column="0"><widget class="QCheckBox" name="quality_phase_locking_placeholder"><property name="enabled"><bool>false</bool></property><property name="text"><string>Phase Locking</string></property></widget></item>
+       <item row="3" column="1"><widget class="QCheckBox" name="quality_associator_damping_placeholder"><property name="enabled"><bool>false</bool></property><property name="text"><string>Associator Damping</string></property></widget></item>
+      </layout>
+       </item>
+      <item>
+       <widget class="QLabel" name="qualities_state_label">
+        <property name="frameShape">
+         <enum>QFrame::StyledPanel</enum>
+        </property>
+        <property name="text">
+         <string>Alchemy state: qualities idle | bins idle</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="margin">
+         <number>4</number>
+        </property>
+       </widget>
+      </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
      <widget class="QCheckBox" name="ema_enabled_check">
       <property name="text">
        <string>Enable EMA smoothing head</string>
@@ -223,6 +303,36 @@
      <widget class="QCheckBox" name="predictive_enabled_check">
       <property name="text">
        <string>Enable Predictive memory head (next-frame lookup)</string>
+      </property>
+      <property name="checked">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QCheckBox" name="chi_square_enabled_check">
+      <property name="text">
+       <string>Enable Chi-Square robustness head</string>
+      </property>
+      <property name="checked">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QCheckBox" name="pareto_enabled_check">
+      <property name="text">
+       <string>Enable Pareto tail-robust head</string>
+      </property>
+      <property name="checked">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QCheckBox" name="outlier_quarantine_enabled_check">
+      <property name="text">
+       <string>Enable entropy outlier quarantine</string>
       </property>
       <property name="checked">
        <bool>true</bool>
