@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/alpha-spectrum/presets">
+        <file>presets/ema-foundation.yaml</file>
+        <file>presets/brownian-ensemble.yaml</file>
+        <file>presets/full-ensemble.yaml</file>
+    </qresource>
+</RCC>

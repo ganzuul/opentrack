@@ -1,12 +1,22 @@
 #include "ftnoir_filter_alpha_spectrum.h"
+#include "options/globals.hpp"
+
+constexpr auto mo = std::memory_order_relaxed;
+namespace gov = detail::alpha_spectrum::governance;
 
 #include <QCheckBox>
+#include <QDirIterator>
+#include <QFile>
 #include <QFontDatabase>
 #include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QPushButton>
 #include <QComboBox>
+#include <QDir>
+#include <QRegularExpression>
+#include <QTextStream>
 #include <QTimer>
 #include <QSizePolicy>
 #include <QSlider>
@@ -27,7 +37,146 @@
 #include <functional>
 #include <vector>
 
+static void ensure_preset_resources() { Q_INIT_RESOURCE(alpha_spectrum_presets); }
+
 namespace {
+
+// ---------------------------------------------------------------------------
+// Preset YAML parser — handles the exact schema defined in presets/*.yaml.
+// Returns nullopt if the text lacks a `name:` entry.
+// ---------------------------------------------------------------------------
+
+static std::optional<detail::alpha_spectrum::preset_def>
+parse_preset_yaml(const QString& text)
+{
+    using detail::alpha_spectrum::tracking_head;
+    using detail::alpha_spectrum::preset_def;
+    using detail::alpha_spectrum::index;
+
+    preset_def def;
+
+    enum class yaml_section { none, heads, params } section = yaml_section::none;
+
+    for (const QString& raw_line : text.split(QLatin1Char('\n')))
+    {
+        const QString line = raw_line.trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+            continue;
+
+        const bool is_indented = raw_line.startsWith(QStringLiteral("  "));
+
+        const int colon_pos = line.indexOf(QLatin1Char(':'));
+        if (colon_pos < 0)
+            continue;
+
+        const QString key = line.left(colon_pos).trimmed();
+        QString val = line.mid(colon_pos + 1).trimmed();
+
+        // Section header: indented=false, nothing after colon.
+        if (!is_indented && val.isEmpty())
+        {
+            if      (key == QStringLiteral("heads"))  section = yaml_section::heads;
+            else if (key == QStringLiteral("params")) section = yaml_section::params;
+            else                                      section = yaml_section::none;
+            continue;
+        }
+
+        // Strip optional quotes from string values.
+        if (val.size() >= 2 && val.startsWith(QLatin1Char('"')) && val.endsWith(QLatin1Char('"')))
+            val = val.mid(1, val.size() - 2);
+
+        if (!is_indented)
+        {
+            if      (key == QStringLiteral("name"))         def.name = val.toStdString();
+            else if (key == QStringLiteral("description"))  def.description = val.toStdString();
+            else if (key == QStringLiteral("adaptive-mode")) def.adaptive_mode = (val == QStringLiteral("true"));
+        }
+        else if (section == yaml_section::heads)
+        {
+            const bool enabled = (val == QStringLiteral("true"));
+            if      (key == QStringLiteral("ema"))        def.head_enabled[index(tracking_head::ema)]        = enabled;
+            else if (key == QStringLiteral("brownian"))   def.head_enabled[index(tracking_head::brownian)]   = enabled;
+            else if (key == QStringLiteral("adaptive"))   { def.head_enabled[index(tracking_head::adaptive)]  = enabled; def.adaptive_mode = enabled; }
+            else if (key == QStringLiteral("predictive")) def.head_enabled[index(tracking_head::predictive)] = enabled;
+            else if (key == QStringLiteral("chi-square")) def.head_enabled[index(tracking_head::chi_square)] = enabled;
+            else if (key == QStringLiteral("pareto"))     def.head_enabled[index(tracking_head::pareto)]     = enabled;
+        }
+        else if (section == yaml_section::params)
+        {
+            bool ok = false;
+            double v = val.toDouble(&ok);
+            if (!ok) continue;
+            if      (key == QStringLiteral("rot-alpha-min")) def.rot_alpha_min = v;
+            else if (key == QStringLiteral("rot-alpha-max")) def.rot_alpha_max = v;
+            else if (key == QStringLiteral("rot-curve"))     def.rot_curve     = v;
+            else if (key == QStringLiteral("pos-alpha-min")) def.pos_alpha_min = v;
+            else if (key == QStringLiteral("pos-alpha-max")) def.pos_alpha_max = v;
+            else if (key == QStringLiteral("pos-curve"))     def.pos_curve     = v;
+            else if (key == QStringLiteral("rot-deadzone"))  def.rot_deadzone  = v;
+            else if (key == QStringLiteral("pos-deadzone"))  def.pos_deadzone  = v;
+        }
+    }
+
+    if (def.name.empty()) return std::nullopt;
+    return def;
+}
+
+static std::vector<detail::alpha_spectrum::preset_def> load_yaml_presets()
+{
+    ensure_preset_resources();
+    std::vector<detail::alpha_spectrum::preset_def> result;
+
+    auto scan_dir = [&](const QString& dir_path) {
+        QDirIterator it(dir_path);
+        while (it.hasNext())
+        {
+            const QString path = it.next();
+            if (!path.endsWith(QStringLiteral(".yaml"), Qt::CaseInsensitive))
+                continue;
+            QFile f(path);
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+                continue;
+            auto def = parse_preset_yaml(QString::fromUtf8(f.readAll()));
+            if (def)
+                result.push_back(std::move(*def));
+        }
+    };
+
+    scan_dir(QStringLiteral(":/alpha-spectrum/presets"));
+    scan_dir(options::globals::ini_directory() + QStringLiteral("/alpha-spectrum-presets"));
+
+    std::sort(result.begin(), result.end(),
+              [](const auto& a, const auto& b) { return a.name < b.name; });
+    return result;
+}
+
+static void apply_preset(const detail::alpha_spectrum::preset_def& def,
+                         settings_alpha_spectrum& s)
+{
+    using detail::alpha_spectrum::tracking_head;
+    using detail::alpha_spectrum::index;
+
+    s.adaptive_mode       = def.head_enabled[index(tracking_head::adaptive)] || def.adaptive_mode;
+    s.ema_enabled         = def.head_enabled[index(tracking_head::ema)];
+    s.brownian_enabled    = def.head_enabled[index(tracking_head::brownian)];
+    s.predictive_enabled  = def.head_enabled[index(tracking_head::predictive)];
+    s.chi_square_enabled  = def.head_enabled[index(tracking_head::chi_square)];
+    s.pareto_enabled      = def.head_enabled[index(tracking_head::pareto)];
+
+    if (def.rot_alpha_min >= 0) s.rot_alpha_min = options::slider_value{def.rot_alpha_min, 0.005, 0.4};
+    if (def.rot_alpha_max >= 0) s.rot_alpha_max = options::slider_value{def.rot_alpha_max, 0.02,  1.0};
+    if (def.rot_curve     >= 0) s.rot_curve     = options::slider_value{def.rot_curve,     0.2,   8.0};
+    if (def.pos_alpha_min >= 0) s.pos_alpha_min = options::slider_value{def.pos_alpha_min, 0.005, 0.4};
+    if (def.pos_alpha_max >= 0) s.pos_alpha_max = options::slider_value{def.pos_alpha_max, 0.02,  1.0};
+    if (def.pos_curve     >= 0) s.pos_curve     = options::slider_value{def.pos_curve,     0.2,   8.0};
+    if (def.rot_deadzone  >= 0) s.rot_deadzone  = options::slider_value{def.rot_deadzone,  0.0,   3.0};
+    if (def.pos_deadzone  >= 0) s.pos_deadzone  = options::slider_value{def.pos_deadzone,  0.0,   3.0};
+
+    s.b->save();
+}
+
+// ---------------------------------------------------------------------------
+
     enum class ui_complexity_mode : int
     {
         basic = 0,
@@ -80,11 +229,16 @@ namespace {
                 if (dragging && event->button() == Qt::LeftButton)
                 {
                     dragging = false;
+                    if (on_moved)
+                        on_moved(pos());
                     event->accept();
                     return;
                 }
                 QGraphicsProxyWidget::mouseReleaseEvent(event);
             }
+
+        public:
+            std::function<void(QPointF)> on_moved;
 
         private:
             bool dragging = false;
@@ -95,9 +249,9 @@ namespace {
             QWidget(parent), s(settings)
         {
             auto* root = new QVBoxLayout(this);
-            auto* title = new QLabel(tr("Advanced Node Editor (Qt-native scaffold)"), this);
+            auto* title = new QLabel(tr("Advanced Node Editor (Independent Heads)"), this);
             auto* hint = new QLabel(tr("This advanced surface is native Qt and uses the same settings API.\n"
-                                       "Nodes are draggable Qt widgets; links reflect architectural flow."), this);
+                                       "Head nodes are independent biases over raw input; Renyi neck edges feed shoulder composition."), this);
             hint->setWordWrap(true);
             hint->setFrameShape(QFrame::StyledPanel);
 
@@ -105,8 +259,8 @@ namespace {
             view = new QGraphicsView(scene, this);
             view->setRenderHint(QPainter::Antialiasing, true);
             view->setDragMode(QGraphicsView::RubberBandDrag);
-            view->setMinimumHeight(460);
-            view->setSceneRect(0, 0, 1500, 520);
+            view->setMinimumHeight(380);
+            view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
             auto add_checkbox_binding = [this](QVBoxLayout* layout, const QString& text,
                                                std::function<bool()> getter,
@@ -114,7 +268,7 @@ namespace {
                 auto* box = new QCheckBox(text);
                 layout->addWidget(box);
                 connect(box, &QCheckBox::toggled, this, [setter](bool v) { setter(v); });
-                checks.push_back({box, std::move(getter), std::move(setter)});
+                checks.push_back({box, std::move(getter)});
                 return box;
             };
 
@@ -134,56 +288,46 @@ namespace {
                     const double t = std::clamp(pos / 1000.0, 0.0, 1.0);
                     setter(min_v + (max_v - min_v) * t);
                 });
-                sliders.push_back({slider, value, min_v, max_v, std::move(getter), std::move(setter), std::move(formatter)});
+                sliders.push_back({slider, value, min_v, max_v, std::move(getter), std::move(formatter)});
             };
 
-            auto* core_group = new QGroupBox(tr("Core EMA Geometry"));
-            auto* core_layout = new QGridLayout(core_group);
-            add_slider_binding(core_layout, 0, tr("Rot Min"), 0.005, 0.4,
+            auto* ema_group = new QGroupBox(tr("Head: EMA"));
+            auto* ema_layout = new QGridLayout(ema_group);
+            ema_check = new QCheckBox(tr("Enabled"), ema_group);
+            ema_layout->addWidget(ema_check, 0, 0, 1, 3);
+            connect(ema_check, &QCheckBox::toggled, this, [this](bool v) { if (s) s->ema_enabled = v; });
+            checks.push_back({ema_check, [this] { return *s->ema_enabled; }});
+            add_slider_binding(ema_layout, 1, tr("Rot Min"), 0.005, 0.4,
                                [this] { return (double)*s->rot_alpha_min; },
                                [this](double v) { s->rot_alpha_min = options::slider_value{v, 0.005, 0.4}; },
                                [](double v) { return QStringLiteral("%1%").arg(v * 100.0, 0, 'f', 1); });
-            add_slider_binding(core_layout, 1, tr("Rot Max"), 0.02, 1.0,
+            add_slider_binding(ema_layout, 2, tr("Rot Max"), 0.02, 1.0,
                                [this] { return (double)*s->rot_alpha_max; },
                                [this](double v) { s->rot_alpha_max = options::slider_value{v, 0.02, 1.0}; },
                                [](double v) { return QStringLiteral("%1%").arg(v * 100.0, 0, 'f', 1); });
-            add_slider_binding(core_layout, 2, tr("Rot Curve"), 0.2, 8.0,
+            add_slider_binding(ema_layout, 3, tr("Rot Curve"), 0.2, 8.0,
                                [this] { return (double)*s->rot_curve; },
                                [this](double v) { s->rot_curve = options::slider_value{v, 0.2, 8.0}; },
                                [](double v) { return QStringLiteral("%1").arg(v, 0, 'f', 2); });
-            add_slider_binding(core_layout, 3, tr("Rot DZ"), 0.0, 0.3,
-                               [this] { return (double)*s->rot_deadzone; },
-                               [this](double v) { s->rot_deadzone = options::slider_value{v, 0.0, 0.3}; },
-                               [](double v) { return QStringLiteral("%1°").arg(v, 0, 'f', 3); });
-            add_slider_binding(core_layout, 4, tr("Pos Min"), 0.005, 0.4,
+            add_slider_binding(ema_layout, 4, tr("Pos Min"), 0.005, 0.4,
                                [this] { return (double)*s->pos_alpha_min; },
                                [this](double v) { s->pos_alpha_min = options::slider_value{v, 0.005, 0.4}; },
                                [](double v) { return QStringLiteral("%1%").arg(v * 100.0, 0, 'f', 1); });
-            add_slider_binding(core_layout, 5, tr("Pos Max"), 0.02, 1.0,
+            add_slider_binding(ema_layout, 5, tr("Pos Max"), 0.02, 1.0,
                                [this] { return (double)*s->pos_alpha_max; },
                                [this](double v) { s->pos_alpha_max = options::slider_value{v, 0.02, 1.0}; },
                                [](double v) { return QStringLiteral("%1%").arg(v * 100.0, 0, 'f', 1); });
-            add_slider_binding(core_layout, 6, tr("Pos Curve"), 0.2, 8.0,
+            add_slider_binding(ema_layout, 6, tr("Pos Curve"), 0.2, 8.0,
                                [this] { return (double)*s->pos_curve; },
                                [this](double v) { s->pos_curve = options::slider_value{v, 0.2, 8.0}; },
                                [](double v) { return QStringLiteral("%1").arg(v, 0, 'f', 2); });
-            add_slider_binding(core_layout, 7, tr("Pos DZ"), 0.0, 2.0,
-                               [this] { return (double)*s->pos_deadzone; },
-                               [this](double v) { s->pos_deadzone = options::slider_value{v, 0.0, 2.0}; },
-                               [](double v) { return QStringLiteral("%1mm").arg(v, 0, 'f', 3); });
-
-            auto* ema_group = new QGroupBox(tr("Head: EMA"));
-            auto* ema_layout = new QVBoxLayout(ema_group);
-            ema_check = add_checkbox_binding(ema_layout, tr("Enabled"),
-                                             [this] { return *s->ema_enabled; },
-                                             [this](bool v) { s->ema_enabled = v; });
 
             auto* brownian_group = new QGroupBox(tr("Head: Brownian"));
             auto* brownian_layout = new QGridLayout(brownian_group);
             brownian_check = new QCheckBox(tr("Enabled"), brownian_group);
             brownian_layout->addWidget(brownian_check, 0, 0, 1, 3);
             connect(brownian_check, &QCheckBox::toggled, this, [this](bool v) { if (s) s->brownian_enabled = v; });
-            checks.push_back({brownian_check, [this] { return *s->brownian_enabled; }, [this](bool v) { s->brownian_enabled = v; }});
+            checks.push_back({brownian_check, [this] { return *s->brownian_enabled; }});
             add_slider_binding(brownian_layout, 1, tr("Gain"), 0.0, 2.0,
                                [this] { return (double)*s->brownian_head_gain; },
                                [this](double v) { s->brownian_head_gain = options::slider_value{v, 0.0, 2.0}; },
@@ -194,7 +338,7 @@ namespace {
             adaptive_check = new QCheckBox(tr("Enabled"), adaptive_group);
             adaptive_layout->addWidget(adaptive_check, 0, 0, 1, 3);
             connect(adaptive_check, &QCheckBox::toggled, this, [this](bool v) { if (s) s->adaptive_mode = v; });
-            checks.push_back({adaptive_check, [this] { return *s->adaptive_mode; }, [this](bool v) { s->adaptive_mode = v; }});
+            checks.push_back({adaptive_check, [this] { return *s->adaptive_mode; }});
             add_slider_binding(adaptive_layout, 1, tr("Lift"), 0.0, 0.6,
                                [this] { return (double)*s->adaptive_threshold_lift; },
                                [this](double v) { s->adaptive_threshold_lift = options::slider_value{v, 0.0, 0.6}; },
@@ -205,7 +349,7 @@ namespace {
             predictive_check = new QCheckBox(tr("Enabled"), predictive_group);
             predictive_layout->addWidget(predictive_check, 0, 0, 1, 3);
             connect(predictive_check, &QCheckBox::toggled, this, [this](bool v) { if (s) s->predictive_enabled = v; });
-            checks.push_back({predictive_check, [this] { return *s->predictive_enabled; }, [this](bool v) { s->predictive_enabled = v; }});
+            checks.push_back({predictive_check, [this] { return *s->predictive_enabled; }});
             add_slider_binding(predictive_layout, 1, tr("Rot Gain"), 0.0, 2.0,
                                [this] { return (double)*s->predictive_head_gain; },
                                [this](double v) { s->predictive_head_gain = options::slider_value{v, 0.0, 2.0}; },
@@ -215,54 +359,67 @@ namespace {
                                [this](double v) { s->predictive_translation_gain = options::slider_value{v, 0.0, 2.0}; },
                                [](double v) { return QStringLiteral("%1x").arg(v, 0, 'f', 2); });
 
-            auto* entropy_group = new QGroupBox(tr("Entropy / MTM"));
+            auto* entropy_group = new QGroupBox(tr("Renyi Neck / Shoulder"));
             auto* entropy_layout = new QGridLayout(entropy_group);
-            mtm_check = new QCheckBox(tr("MTM enabled"), entropy_group);
-            entropy_layout->addWidget(mtm_check, 0, 0, 1, 3);
-            connect(mtm_check, &QCheckBox::toggled, this, [this](bool v) { if (s) s->mtm_enabled = v; });
-            checks.push_back({mtm_check, [this] { return *s->mtm_enabled; }, [this](bool v) { s->mtm_enabled = v; }});
-            add_slider_binding(entropy_layout, 1, tr("Shoulder"), 0.0, 1.0,
+            add_slider_binding(entropy_layout, 0, tr("Shoulder"), 0.0, 1.0,
                                [this] { return (double)*s->mtm_shoulder_base; },
                                [this](double v) { s->mtm_shoulder_base = options::slider_value{v, 0.0, 1.0}; },
                                [](double v) { return QStringLiteral("%1%").arg(v * 100.0, 0, 'f', 1); });
-            add_slider_binding(entropy_layout, 2, tr("NGC Kappa"), 0.0, 0.3,
+            add_slider_binding(entropy_layout, 1, tr("NGC Kappa"), 0.0, 0.3,
                                [this] { return (double)*s->ngc_kappa; },
                                [this](double v) { s->ngc_kappa = options::slider_value{v, 0.0, 0.3}; },
                                [](double v) { return QStringLiteral("%1").arg(v, 0, 'f', 3); });
-            add_slider_binding(entropy_layout, 3, tr("NGC Nominal Z"), 0.3, 2.0,
+            add_slider_binding(entropy_layout, 2, tr("NGC Nominal Z"), 0.3, 2.0,
                                [this] { return (double)*s->ngc_nominal_z; },
                                [this](double v) { s->ngc_nominal_z = options::slider_value{v, 0.3, 2.0}; },
                                [](double v) { return QStringLiteral("%1m").arg(v, 0, 'f', 2); });
             purity_value = new QLabel(entropy_group);
-            entropy_layout->addWidget(new QLabel(tr("Purity"), entropy_group), 4, 0);
-            entropy_layout->addWidget(purity_value, 4, 1, 1, 2);
+            entropy_layout->addWidget(new QLabel(tr("Purity"), entropy_group), 3, 0);
+            entropy_layout->addWidget(purity_value, 3, 1, 1, 2);
+            neck_health_value = new QLabel(entropy_group);
+            entropy_layout->addWidget(new QLabel(tr("Neck Health"), entropy_group), 4, 0);
+            entropy_layout->addWidget(neck_health_value, 4, 1, 1, 2);
 
-            auto* robust_group = new QGroupBox(tr("Robustness"));
-            auto* robust_layout = new QGridLayout(robust_group);
-            chi_check = new QCheckBox(tr("Chi-square"), robust_group);
-            pareto_check = new QCheckBox(tr("Pareto"), robust_group);
-            quarantine_check = new QCheckBox(tr("Quarantine"), robust_group);
-            robust_layout->addWidget(chi_check, 0, 0, 1, 3);
-            robust_layout->addWidget(pareto_check, 1, 0, 1, 3);
-            robust_layout->addWidget(quarantine_check, 2, 0, 1, 3);
+            auto* chi_group = new QGroupBox(tr("Head: Chi-square"));
+            auto* chi_layout = new QGridLayout(chi_group);
+            chi_check = new QCheckBox(tr("Enabled (error gain)"), chi_group);
+            chi_layout->addWidget(chi_check, 0, 0, 1, 3);
             connect(chi_check, &QCheckBox::toggled, this, [this](bool v) { if (s) s->chi_square_enabled = v; });
-            connect(pareto_check, &QCheckBox::toggled, this, [this](bool v) { if (s) s->pareto_enabled = v; });
-            connect(quarantine_check, &QCheckBox::toggled, this, [this](bool v) { if (s) s->outlier_quarantine_enabled = v; });
-            checks.push_back({chi_check, [this] { return *s->chi_square_enabled; }, [this](bool v) { s->chi_square_enabled = v; }});
-            checks.push_back({pareto_check, [this] { return *s->pareto_enabled; }, [this](bool v) { s->pareto_enabled = v; }});
-            checks.push_back({quarantine_check, [this] { return *s->outlier_quarantine_enabled; }, [this](bool v) { s->outlier_quarantine_enabled = v; }});
-            add_slider_binding(robust_layout, 3, tr("Chi Gain"), 0.0, 2.0,
+            checks.push_back({chi_check, [this] { return *s->chi_square_enabled; }});
+            add_slider_binding(chi_layout, 1, tr("Gain"), 0.0, 2.0,
                                [this] { return (double)*s->chi_square_head_gain; },
                                [this](double v) { s->chi_square_head_gain = options::slider_value{v, 0.0, 2.0}; },
                                [](double v) { return QStringLiteral("%1x").arg(v, 0, 'f', 2); });
-            add_slider_binding(robust_layout, 4, tr("Pareto Gain"), 0.0, 2.0,
+
+            auto* pareto_group = new QGroupBox(tr("Head: Pareto"));
+            auto* pareto_layout = new QGridLayout(pareto_group);
+            pareto_check = new QCheckBox(tr("Enabled (error gain)"), pareto_group);
+            pareto_layout->addWidget(pareto_check, 0, 0, 1, 3);
+            connect(pareto_check, &QCheckBox::toggled, this, [this](bool v) { if (s) s->pareto_enabled = v; });
+            checks.push_back({pareto_check, [this] { return *s->pareto_enabled; }});
+            add_slider_binding(pareto_layout, 1, tr("Gain"), 0.0, 2.0,
                                [this] { return (double)*s->pareto_head_gain; },
                                [this](double v) { s->pareto_head_gain = options::slider_value{v, 0.0, 2.0}; },
                                [](double v) { return QStringLiteral("%1x").arg(v, 0, 'f', 2); });
-            add_slider_binding(robust_layout, 5, tr("Quarantine"), 0.0, 1.0,
+
+            auto* errorgate_group = new QGroupBox(tr("Error Gate / IMM Deadzone"));
+            auto* errorgate_layout = new QGridLayout(errorgate_group);
+            quarantine_check = new QCheckBox(tr("Quarantine outliers"), errorgate_group);
+            errorgate_layout->addWidget(quarantine_check, 0, 0, 1, 3);
+            connect(quarantine_check, &QCheckBox::toggled, this, [this](bool v) { if (s) s->outlier_quarantine_enabled = v; });
+            checks.push_back({quarantine_check, [this] { return *s->outlier_quarantine_enabled; }});
+            add_slider_binding(errorgate_layout, 1, tr("Strength"), 0.0, 1.0,
                                [this] { return (double)*s->outlier_quarantine_strength; },
                                [this](double v) { s->outlier_quarantine_strength = options::slider_value{v, 0.0, 1.0}; },
                                [](double v) { return QStringLiteral("%1%").arg(v * 100.0, 0, 'f', 1); });
+            add_slider_binding(errorgate_layout, 2, tr("Rot DZ"), 0.0, 3.0,
+                               [this] { return (double)*s->rot_deadzone; },
+                               [this](double v) { s->rot_deadzone = options::slider_value{v, 0.0, 3.0}; },
+                               [](double v) { return QStringLiteral("%1σ").arg(v, 0, 'f', 2); });
+            add_slider_binding(errorgate_layout, 3, tr("Pos DZ"), 0.0, 3.0,
+                               [this] { return (double)*s->pos_deadzone; },
+                               [this](double v) { s->pos_deadzone = options::slider_value{v, 0.0, 3.0}; },
+                               [](double v) { return QStringLiteral("%1σ").arg(v, 0, 'f', 2); });
 
             auto* quality_group = new QGroupBox(tr("Quality Projection"));
             auto* quality_layout = new QVBoxLayout(quality_group);
@@ -288,63 +445,122 @@ namespace {
                                  [this] { return *s->quality_recovery_pace; },
                                  [this](bool v) { s->quality_recovery_pace = v; });
 
-            core_proxy = new draggable_proxy();
-            core_proxy->setWidget(core_group);
-            scene->addItem(core_proxy);
-            ema_proxy = new draggable_proxy();
-            ema_proxy->setWidget(ema_group);
-            scene->addItem(ema_proxy);
-            brownian_proxy = new draggable_proxy();
-            brownian_proxy->setWidget(brownian_group);
-            scene->addItem(brownian_proxy);
-            adaptive_proxy = new draggable_proxy();
-            adaptive_proxy->setWidget(adaptive_group);
-            scene->addItem(adaptive_proxy);
-            predictive_proxy = new draggable_proxy();
-            predictive_proxy->setWidget(predictive_group);
-            scene->addItem(predictive_proxy);
-            entropy_proxy = scene->addWidget(entropy_group);
-            robust_proxy = scene->addWidget(robust_group);
-            quality_proxy = scene->addWidget(quality_group);
-            for (auto* proxy : {entropy_proxy, robust_proxy, quality_proxy})
-            {
-                proxy->setFlag(QGraphicsItem::ItemIsMovable, true);
-                proxy->setFlag(QGraphicsItem::ItemIsSelectable, true);
-                proxy->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
-            }
-            for (auto* proxy : {core_proxy, ema_proxy, brownian_proxy, adaptive_proxy, predictive_proxy})
-            {
-                proxy->setFlag(QGraphicsItem::ItemIsSelectable, true);
-                proxy->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
-            }
-            core_proxy->setPos(20, 40);
-            ema_proxy->setPos(340, 20);
-            brownian_proxy->setPos(340, 120);
-            adaptive_proxy->setPos(340, 240);
-            predictive_proxy->setPos(340, 360);
-            entropy_proxy->setPos(700, 30);
-            robust_proxy->setPos(1080, 60);
-            quality_proxy->setPos(720, 280);
+            auto make_draggable = [&](QWidget* w) {
+                auto* p = new draggable_proxy();
+                p->setWidget(w);
+                scene->addItem(p);
+                p->setFlag(QGraphicsItem::ItemIsSelectable, true);
+                p->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
+                return p;
+            };
+            ema_proxy        = make_draggable(ema_group);
+            brownian_proxy   = make_draggable(brownian_group);
+            adaptive_proxy   = make_draggable(adaptive_group);
+            predictive_proxy = make_draggable(predictive_group);
+            chi_proxy        = make_draggable(chi_group);
+            pareto_proxy     = make_draggable(pareto_group);
+            shoulder_proxy   = make_draggable(entropy_group);
+            errorgate_proxy  = make_draggable(errorgate_group);
+            quality_proxy    = make_draggable(quality_group);
+            ema_proxy->setPos(*s->node_pos_ema_x,         *s->node_pos_ema_y);
+            brownian_proxy->setPos(*s->node_pos_brownian_x,   *s->node_pos_brownian_y);
+            adaptive_proxy->setPos(*s->node_pos_adaptive_x,   *s->node_pos_adaptive_y);
+            predictive_proxy->setPos(*s->node_pos_predictive_x, *s->node_pos_predictive_y);
+            chi_proxy->setPos(*s->node_pos_chi_x,         *s->node_pos_chi_y);
+            pareto_proxy->setPos(*s->node_pos_pareto_x,     *s->node_pos_pareto_y);
+            shoulder_proxy->setPos(*s->node_pos_shoulder_x,   *s->node_pos_shoulder_y);
+            errorgate_proxy->setPos(*s->node_pos_errorgate_x,  *s->node_pos_errorgate_y);
+            quality_proxy->setPos(*s->node_pos_quality_x,   *s->node_pos_quality_y);
 
-            core_to_ema = scene->addPath(QPainterPath(), QPen(QColor(110, 140, 220), 2.0));
-            core_to_brownian = scene->addPath(QPainterPath(), QPen(QColor(110, 140, 220), 2.0));
-            core_to_adaptive = scene->addPath(QPainterPath(), QPen(QColor(110, 140, 220), 2.0));
-            core_to_predictive = scene->addPath(QPainterPath(), QPen(QColor(110, 140, 220), 2.0));
-            brownian_to_entropy = scene->addPath(QPainterPath(), QPen(QColor(80, 140, 220), 2.0));
-            adaptive_to_entropy = scene->addPath(QPainterPath(), QPen(QColor(80, 140, 220), 2.0));
-            predictive_to_entropy = scene->addPath(QPainterPath(), QPen(QColor(80, 140, 220), 2.0));
-            entropy_to_robust = scene->addPath(QPainterPath(), QPen(QColor(220, 140, 80), 2.0));
-            predictive_to_robust = scene->addPath(QPainterPath(), QPen(QColor(140, 180, 100), 1.5, Qt::DashLine));
-            quality_to_robust = scene->addPath(QPainterPath(), QPen(QColor(170, 110, 210), 1.5, Qt::DashLine));
+            static_cast<draggable_proxy*>(ema_proxy)->on_moved        = [this](QPointF p) { s->node_pos_ema_x = p.x(); s->node_pos_ema_y = p.y(); s->b->save(); };
+            static_cast<draggable_proxy*>(brownian_proxy)->on_moved   = [this](QPointF p) { s->node_pos_brownian_x = p.x(); s->node_pos_brownian_y = p.y(); s->b->save(); };
+            static_cast<draggable_proxy*>(adaptive_proxy)->on_moved   = [this](QPointF p) { s->node_pos_adaptive_x = p.x(); s->node_pos_adaptive_y = p.y(); s->b->save(); };
+            static_cast<draggable_proxy*>(predictive_proxy)->on_moved = [this](QPointF p) { s->node_pos_predictive_x = p.x(); s->node_pos_predictive_y = p.y(); s->b->save(); };
+            static_cast<draggable_proxy*>(chi_proxy)->on_moved        = [this](QPointF p) { s->node_pos_chi_x = p.x(); s->node_pos_chi_y = p.y(); s->b->save(); };
+            static_cast<draggable_proxy*>(pareto_proxy)->on_moved     = [this](QPointF p) { s->node_pos_pareto_x = p.x(); s->node_pos_pareto_y = p.y(); s->b->save(); };
+            static_cast<draggable_proxy*>(shoulder_proxy)->on_moved   = [this](QPointF p) { s->node_pos_shoulder_x = p.x(); s->node_pos_shoulder_y = p.y(); s->b->save(); };
+            static_cast<draggable_proxy*>(errorgate_proxy)->on_moved  = [this](QPointF p) { s->node_pos_errorgate_x = p.x(); s->node_pos_errorgate_y = p.y(); s->b->save(); };
+            static_cast<draggable_proxy*>(quality_proxy)->on_moved    = [this](QPointF p) { s->node_pos_quality_x = p.x(); s->node_pos_quality_y = p.y(); s->b->save(); };
 
-            edge_label_entropy = scene->addSimpleText(tr("Fusion -> Robustness"));
-            edge_label_predictive = scene->addSimpleText(tr("Predictive shortcut"));
-            edge_label_quality = scene->addSimpleText(tr("Quality overlay"));
+            node_proxies[gov::index(gov::canvas_node::ema)]        = ema_proxy;
+            node_proxies[gov::index(gov::canvas_node::brownian)]   = brownian_proxy;
+            node_proxies[gov::index(gov::canvas_node::adaptive)]   = adaptive_proxy;
+            node_proxies[gov::index(gov::canvas_node::predictive)] = predictive_proxy;
+            node_proxies[gov::index(gov::canvas_node::chi_square)] = chi_proxy;
+            node_proxies[gov::index(gov::canvas_node::pareto)]     = pareto_proxy;
+            node_proxies[gov::index(gov::canvas_node::shoulder)]   = shoulder_proxy;
+            node_proxies[gov::index(gov::canvas_node::error_gate)] = errorgate_proxy;
+            node_proxies[gov::index(gov::canvas_node::quality)]    = quality_proxy;
+            for (size_t i = 0; i < gov::canvas_edge_count; ++i) {
+                const auto& m = gov::canvas_edge_registry[i];
+                const QColor c(m.active_color.r, m.active_color.g, m.active_color.b);
+                edge_items[i] = scene->addPath(QPainterPath(),
+                    QPen(c, m.dashed ? 1.5 : 2.0, m.dashed ? Qt::DashLine : Qt::SolidLine));
+            }
+
+            edge_label_entropy = scene->addSimpleText(tr("Shoulder -> Error Gate"));
+            edge_label_predictive = scene->addSimpleText(tr("Head ε-gain -> Neck"));
+            edge_label_quality = scene->addSimpleText(tr("Quality discriminant -> Shoulder"));
             for (auto* label : {edge_label_entropy, edge_label_predictive, edge_label_quality})
                 label->setBrush(QBrush(QColor(190, 190, 190)));
 
             root->addWidget(title);
             root->addWidget(hint);
+
+            auto* btn_bar = new QHBoxLayout;
+            auto* save_btn = new QPushButton(tr("Save as Configuration…"), this);
+            save_btn->setToolTip(tr("Export current settings as a named preset that will appear in the Simplified view's Configuration dropdown."));
+            btn_bar->addStretch();
+            btn_bar->addWidget(save_btn);
+            root->addLayout(btn_bar);
+
+            connect(save_btn, &QPushButton::clicked, this, [this] {
+                bool ok = false;
+                const QString name = QInputDialog::getText(
+                    this, tr("Save as Configuration"),
+                    tr("Configuration name:"),
+                    QLineEdit::Normal, QString(), &ok);
+                if (!ok || name.trimmed().isEmpty())
+                    return;
+
+                const QString preset_dir = options::globals::ini_directory()
+                                           + QStringLiteral("/alpha-spectrum-presets");
+                QDir().mkpath(preset_dir);
+
+                QString filename = name.trimmed().toLower();
+                filename.replace(QRegularExpression(QStringLiteral("[^a-z0-9_-]")),
+                                 QStringLiteral("-"));
+                const QString filepath = preset_dir + QStringLiteral("/") + filename
+                                         + QStringLiteral(".yaml");
+
+                QFile f(filepath);
+                if (!f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate))
+                    return;
+
+                QTextStream ts(&f);
+                auto bstr = [](bool v) -> QLatin1String { return v ? QLatin1String("true") : QLatin1String("false"); };
+                ts << "# Alpha Spectrum configuration saved from Advanced view\n";
+                ts << "name: \"" << name.trimmed() << "\"\n";
+                ts << "description: \"Saved from Advanced node canvas\"\n";
+                ts << "adaptive-mode: " << bstr(*s->adaptive_mode) << "\n";
+                ts << "heads:\n";
+                ts << "  ema: "        << bstr(*s->ema_enabled)        << "\n";
+                ts << "  brownian: "   << bstr(*s->brownian_enabled)   << "\n";
+                ts << "  adaptive: "   << bstr(*s->adaptive_mode)      << "\n";
+                ts << "  predictive: " << bstr(*s->predictive_enabled) << "\n";
+                ts << "  chi-square: " << bstr(*s->chi_square_enabled) << "\n";
+                ts << "  pareto: "     << bstr(*s->pareto_enabled)     << "\n";
+                ts << "params:\n";
+                ts << "  rot-alpha-min: " << QString::number((double)*s->rot_alpha_min, 'f', 4) << "\n";
+                ts << "  rot-alpha-max: " << QString::number((double)*s->rot_alpha_max, 'f', 4) << "\n";
+                ts << "  rot-curve: "     << QString::number((double)*s->rot_curve,     'f', 4) << "\n";
+                ts << "  pos-alpha-min: " << QString::number((double)*s->pos_alpha_min, 'f', 4) << "\n";
+                ts << "  pos-alpha-max: " << QString::number((double)*s->pos_alpha_max, 'f', 4) << "\n";
+                ts << "  pos-curve: "     << QString::number((double)*s->pos_curve,     'f', 4) << "\n";
+                ts << "  rot-deadzone: "  << QString::number((double)*s->rot_deadzone,  'f', 4) << "\n";
+                ts << "  pos-deadzone: "  << QString::number((double)*s->pos_deadzone,  'f', 4) << "\n";
+            });
+
             root->addWidget(view, 1);
 
             auto* frame_timer = new QTimer(this);
@@ -352,6 +568,7 @@ namespace {
             QObject::connect(frame_timer, &QTimer::timeout, this, [this] {
                 if (!s)
                     return;
+                const auto& status = detail::alpha_spectrum::shared_calibration_status();
                 for (auto& binding : checks)
                 {
                     const QSignalBlocker b(binding.box);
@@ -366,8 +583,71 @@ namespace {
                     binding.value->setText(binding.formatter(x));
                 }
                 purity_value->setText(QStringLiteral("rot %1 / pos %2")
-                                          .arg(detail::alpha_spectrum::shared_calibration_status().rot_mode_purity.load(std::memory_order_relaxed), 0, 'f', 3)
-                                          .arg(detail::alpha_spectrum::shared_calibration_status().pos_mode_purity.load(std::memory_order_relaxed), 0, 'f', 3));
+                                          .arg(status.mode_purity.rot.load(mo), 0, 'f', 3)
+                                          .arg(status.mode_purity.pos.load(mo), 0, 'f', 3));
+
+                const double rot_werr = status.neck_weight_error.rot.load(mo);
+                const double pos_werr = status.neck_weight_error.pos.load(mo);
+                const double rot_inv  = status.neck_invalid_ratio.rot.load(mo);
+                const double pos_inv  = status.neck_invalid_ratio.pos.load(mo);
+                std::array<bool, gov::canvas_edge_count> edge_active;
+                for (size_t i = 0; i < gov::canvas_edge_count; ++i)
+                    edge_active[i] = status.edge_valid[i].load(mo);
+                const bool shoulder_edge_valid =
+                    edge_active[gov::index(gov::canvas_edge::shoulder_to_error_gate)];
+
+                neck_health_value->setText(QStringLiteral("wErr r/p %1 / %2 | inv r/p %3 / %4")
+                                               .arg(rot_werr, 0, 'g', 3)
+                                               .arg(pos_werr, 0, 'g', 3)
+                                               .arg(rot_inv, 0, 'f', 2)
+                                               .arg(pos_inv, 0, 'f', 2));
+                if (edge_label_entropy)
+                {
+                    edge_label_entropy->setText(QStringLiteral("Shoulder -> Error Gate | wErr %1/%2")
+                                                    .arg(rot_werr, 0, 'g', 2)
+                                                    .arg(pos_werr, 0, 'g', 2));
+                }
+                if (edge_label_predictive)
+                {
+                    edge_label_predictive->setText(QStringLiteral("Head ε-gain -> Neck | inv %1/%2")
+                                                       .arg(rot_inv, 0, 'f', 2)
+                                                       .arg(pos_inv, 0, 'f', 2));
+                }
+
+                const double worst_werr = std::max(rot_werr, pos_werr);
+                const double worst_inv = std::max(rot_inv, pos_inv);
+                QColor health_color(90, 190, 120);
+                if (worst_werr > 1e-2 || worst_inv > 0.10)
+                    health_color = QColor(220, 90, 90);
+                else if (worst_werr > 1e-4 || worst_inv > 0.01)
+                    health_color = QColor(220, 170, 80);
+
+                const QColor inactive_color(110, 110, 110);
+                for (size_t i = 0; i < gov::canvas_edge_count; ++i) {
+                    if (!edge_items[i]) continue;
+                    const auto& m = gov::canvas_edge_registry[i];
+                    const QColor active_col = m.use_health_color
+                        ? health_color
+                        : QColor(m.active_color.r, m.active_color.g, m.active_color.b);
+                    if (edge_active[i])
+                        edge_items[i]->setPen(QPen(active_col, 2.4, Qt::SolidLine));
+                    else
+                        edge_items[i]->setPen(QPen(inactive_color, 1.5, Qt::DashLine));
+                }
+
+                if (edge_label_entropy)
+                    edge_label_entropy->setBrush(QBrush(shoulder_edge_valid ? health_color : inactive_color));
+                if (edge_label_predictive) {
+                    const bool any_head_valid =
+                        edge_active[gov::index(gov::canvas_edge::ema_to_shoulder)]
+                        || edge_active[gov::index(gov::canvas_edge::brownian_to_shoulder)]
+                        || edge_active[gov::index(gov::canvas_edge::adaptive_to_shoulder)]
+                        || edge_active[gov::index(gov::canvas_edge::predictive_to_shoulder)]
+                        || edge_active[gov::index(gov::canvas_edge::chi_square_to_shoulder)]
+                        || edge_active[gov::index(gov::canvas_edge::pareto_to_shoulder)];
+                    edge_label_predictive->setBrush(QBrush(any_head_valid ? health_color : inactive_color));
+                }
+
                 update_edges();
             });
             frame_timer->start();
@@ -392,40 +672,25 @@ namespace {
                 return path;
             };
 
-            if (core_to_ema)
-                core_to_ema->setPath(make_path(core_proxy, ema_proxy));
-            if (core_to_brownian)
-                core_to_brownian->setPath(make_path(core_proxy, brownian_proxy));
-            if (core_to_adaptive)
-                core_to_adaptive->setPath(make_path(core_proxy, adaptive_proxy));
-            if (core_to_predictive)
-                core_to_predictive->setPath(make_path(core_proxy, predictive_proxy));
-            if (brownian_to_entropy)
-                brownian_to_entropy->setPath(make_path(brownian_proxy, entropy_proxy));
-            if (adaptive_to_entropy)
-                adaptive_to_entropy->setPath(make_path(adaptive_proxy, entropy_proxy));
-            if (predictive_to_entropy)
-                predictive_to_entropy->setPath(make_path(predictive_proxy, entropy_proxy));
-            if (entropy_to_robust)
-                entropy_to_robust->setPath(make_path(entropy_proxy, robust_proxy));
-            if (predictive_to_robust)
-                predictive_to_robust->setPath(make_path(predictive_proxy, robust_proxy));
-            if (quality_to_robust)
-                quality_to_robust->setPath(make_path(quality_proxy, robust_proxy));
+            for (size_t i = 0; i < gov::canvas_edge_count; ++i) {
+                if (!edge_items[i]) continue;
+                const auto& m = gov::canvas_edge_registry[i];
+                edge_items[i]->setPath(make_path(node_proxies[gov::index(m.from)],
+                                                 node_proxies[gov::index(m.to)]));
+            }
 
             if (edge_label_entropy)
-                edge_label_entropy->setPos((entropy_proxy->sceneBoundingRect().center() + robust_proxy->sceneBoundingRect().center()) * 0.5 + QPointF(-10, -18));
+                edge_label_entropy->setPos((shoulder_proxy->sceneBoundingRect().center() + errorgate_proxy->sceneBoundingRect().center()) * 0.5 + QPointF(-10, -22));
             if (edge_label_predictive)
-                edge_label_predictive->setPos((predictive_proxy->sceneBoundingRect().center() + robust_proxy->sceneBoundingRect().center()) * 0.5 + QPointF(-10, 8));
+                edge_label_predictive->setPos((brownian_proxy->sceneBoundingRect().center() + shoulder_proxy->sceneBoundingRect().center()) * 0.5 + QPointF(-10, -20));
             if (edge_label_quality)
-                edge_label_quality->setPos((quality_proxy->sceneBoundingRect().center() + robust_proxy->sceneBoundingRect().center()) * 0.5 + QPointF(-10, 22));
+                edge_label_quality->setPos((quality_proxy->sceneBoundingRect().center() + shoulder_proxy->sceneBoundingRect().center()) * 0.5 + QPointF(-10, 16));
         }
 
         struct checkbox_binding final
         {
             QCheckBox* box = nullptr;
             std::function<bool()> getter;
-            std::function<void(bool)> setter;
         };
 
         struct slider_binding final
@@ -435,7 +700,6 @@ namespace {
             double min_value = 0.0;
             double max_value = 1.0;
             std::function<double()> getter;
-            std::function<void(double)> setter;
             std::function<QString(double)> formatter;
         };
 
@@ -447,19 +711,13 @@ namespace {
         QGraphicsProxyWidget* brownian_proxy = nullptr;
         QGraphicsProxyWidget* adaptive_proxy = nullptr;
         QGraphicsProxyWidget* predictive_proxy = nullptr;
-        QGraphicsProxyWidget* entropy_proxy = nullptr;
-        QGraphicsProxyWidget* robust_proxy = nullptr;
+        QGraphicsProxyWidget* chi_proxy = nullptr;
+        QGraphicsProxyWidget* pareto_proxy = nullptr;
+        QGraphicsProxyWidget* shoulder_proxy = nullptr;
+        QGraphicsProxyWidget* errorgate_proxy = nullptr;
         QGraphicsProxyWidget* quality_proxy = nullptr;
-        QGraphicsPathItem* core_to_ema = nullptr;
-        QGraphicsPathItem* core_to_brownian = nullptr;
-        QGraphicsPathItem* core_to_adaptive = nullptr;
-        QGraphicsPathItem* core_to_predictive = nullptr;
-        QGraphicsPathItem* brownian_to_entropy = nullptr;
-        QGraphicsPathItem* adaptive_to_entropy = nullptr;
-        QGraphicsPathItem* predictive_to_entropy = nullptr;
-        QGraphicsPathItem* entropy_to_robust = nullptr;
-        QGraphicsPathItem* predictive_to_robust = nullptr;
-        QGraphicsPathItem* quality_to_robust = nullptr;
+        std::array<QGraphicsPathItem*, gov::canvas_edge_count> edge_items {};
+        std::array<QGraphicsProxyWidget*, gov::canvas_node_count> node_proxies {};
         QGraphicsSimpleTextItem* edge_label_entropy = nullptr;
         QGraphicsSimpleTextItem* edge_label_predictive = nullptr;
         QGraphicsSimpleTextItem* edge_label_quality = nullptr;
@@ -469,13 +727,13 @@ namespace {
         QCheckBox* brownian_check = nullptr;
         QCheckBox* adaptive_check = nullptr;
         QCheckBox* predictive_check = nullptr;
-        QCheckBox* mtm_check = nullptr;
         QCheckBox* chi_check = nullptr;
         QCheckBox* pareto_check = nullptr;
         QCheckBox* quarantine_check = nullptr;
         QSlider* shoulder_slider = nullptr;
         QLabel* shoulder_value = nullptr;
         QLabel* purity_value = nullptr;
+        QLabel* neck_health_value = nullptr;
         QSlider* quarantine_slider = nullptr;
         QLabel* quarantine_value = nullptr;
     };
@@ -492,60 +750,13 @@ namespace {
         return std::clamp((value - min) / (max - min), 0.0, 1.0);
     }
 
-    static QString top_bin_summary(const std::array<double, detail::alpha_spectrum::calibration_status::bin_count>& bins)
-    {
-        static const char* names[] = {
-            "B1", "B2", "B3", "B4", "T1", "T2", "T3", "T4", "P1", "P2", "P3", "P4"
-        };
-
-        int first = 0;
-        int second = 1;
-        for (int i = 0; i < static_cast<int>(bins.size()); i++)
-        {
-            if (bins[i] > bins[first])
-            {
-                second = first;
-                first = i;
-            }
-            else if (i != first && bins[i] > bins[second])
-                second = i;
-        }
-        return QStringLiteral("%1:%2  %3:%4")
-            .arg(QString::fromLatin1(names[first]))
-            .arg(bins[first], 0, 'f', 2)
-            .arg(QString::fromLatin1(names[second]))
-            .arg(bins[second], 0, 'f', 2);
-    }
-
-    static QString heatmap_cell_style(double value, int mode)
-    {
-        const double t = std::clamp(value, 0.0, 1.0);
-        int r = 240, g = 240, b = 240;
-        switch (mode)
-        {
-            case 0: // occupancy
-                r = int(240 - 100 * t); g = int(245 - 15 * t); b = int(240 - 150 * t);
-                break;
-            case 1: // delta
-                r = 255; g = int(248 - 120 * t); b = int(230 - 190 * t);
-                break;
-            case 2: // conflict
-                r = int(245 - 40 * t); g = int(238 - 170 * t); b = int(245 - 20 * t);
-                break;
-            default: // pathology
-                r = int(248 - 20 * t); g = int(238 - 190 * t); b = int(238 - 190 * t);
-                break;
-        }
-        return QStringLiteral("QLabel { background-color: rgb(%1,%2,%3); border: 1px solid rgb(120,120,120); }")
-            .arg(r).arg(g).arg(b);
-    }
 }
 
 dialog_alpha_spectrum::dialog_alpha_spectrum()
 {
     ui.setupUi(this);
 
-    detail::alpha_spectrum::shared_calibration_status().ui_open.store(true, std::memory_order_relaxed);
+    detail::alpha_spectrum::shared_calibration_status().ui_open.store(true, mo);
 
     connect(ui.buttonBox, SIGNAL(accepted()), this, SLOT(doOK()));
     connect(ui.buttonBox, SIGNAL(rejected()), this, SLOT(doCancel()));
@@ -555,6 +766,7 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
         auto* mode_layout = new QHBoxLayout();
         auto* mode_label = new QLabel(tr("UI Mode"), this);
         ui_mode_combo = new QComboBox(this);
+        ui_mode_combo->setObjectName(QStringLiteral("ui_mode_combo"));
         ui_mode_combo->addItem(tr("Basic"), static_cast<int>(ui_complexity_mode::basic));
         ui_mode_combo->addItem(tr("Simplified"), static_cast<int>(ui_complexity_mode::simplified));
         ui_mode_combo->addItem(tr("Advanced (Node Editor)"), static_cast<int>(ui_complexity_mode::advanced));
@@ -563,24 +775,76 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
         ui.verticalLayout->insertLayout(0, mode_layout);
     }
 
+    QComboBox* behavior_combo_ptr = nullptr;
+    QLabel*    behavior_desc_ptr  = nullptr;
     {
-        auto* placeholder_frame = new QFrame(this);
-        placeholder_frame->setFrameShape(QFrame::StyledPanel);
-        auto* placeholder_layout = new QVBoxLayout(placeholder_frame);
-        auto* placeholder_title = new QLabel(tr("Curated Configurations"), placeholder_frame);
-        auto* placeholder_text = new QLabel(
-            tr("No curated simplified configurations are available yet.\n"
-               "Use Advanced mode to develop and refine manual configurations;\n"
-               "approved configurations will appear here once promoted."),
-            placeholder_frame);
-        auto* placeholder_combo = new QComboBox(placeholder_frame);
-        placeholder_combo->addItem(tr("No configurations available"));
-        placeholder_combo->setEnabled(false);
-        placeholder_text->setWordWrap(true);
-        placeholder_layout->addWidget(placeholder_title);
-        placeholder_layout->addWidget(placeholder_combo);
-        placeholder_layout->addWidget(placeholder_text);
-        simplified_placeholder = placeholder_frame;
+        loaded_presets = load_yaml_presets();
+
+        auto* simplified_frame  = new QFrame(this);
+        auto* simplified_layout = new QVBoxLayout(simplified_frame);
+        simplified_layout->setContentsMargins(0, 0, 0, 0);
+
+        // --- Behavior profiles ---
+        auto* profile_group  = new QGroupBox(tr("Behavior Profile"), simplified_frame);
+        auto* profile_layout = new QVBoxLayout(profile_group);
+        auto* behavior_combo = new QComboBox(profile_group);
+        behavior_combo->setObjectName(QStringLiteral("behavior_combo"));
+        profile_layout->addWidget(behavior_combo);
+        auto* profile_desc = new QLabel(profile_group);
+        profile_desc->setWordWrap(true);
+        profile_desc->setMinimumHeight(48);
+        profile_desc->setFrameShape(QFrame::StyledPanel);
+        profile_layout->addWidget(profile_desc);
+        behavior_combo_ptr = behavior_combo;
+        behavior_desc_ptr  = profile_desc;
+        simplified_layout->addWidget(profile_group);
+
+        // --- Curated Configurations ---
+        auto* preset_frame = new QFrame(simplified_frame);
+        preset_frame->setFrameShape(QFrame::StyledPanel);
+        auto* preset_layout = new QVBoxLayout(preset_frame);
+
+        auto* preset_header = new QHBoxLayout();
+        auto* preset_label  = new QLabel(tr("Curated Configuration"), preset_frame);
+        preset_combo        = new QComboBox(preset_frame);
+        preset_combo->setObjectName(QStringLiteral("preset_combo"));
+
+        if (loaded_presets.empty())
+        {
+            preset_combo->addItem(tr("No configurations available"));
+            preset_combo->setEnabled(false);
+        }
+        else
+        {
+            for (int i = 0; i < (int)loaded_presets.size(); ++i)
+                preset_combo->addItem(QString::fromStdString(loaded_presets[i].name), i);
+        }
+
+        preset_header->addWidget(preset_label);
+        preset_header->addWidget(preset_combo, 1);
+        preset_layout->addLayout(preset_header);
+
+        preset_desc = new QLabel(preset_frame);
+        preset_desc->setWordWrap(true);
+        preset_desc->setFrameShape(QFrame::StyledPanel);
+        if (!loaded_presets.empty())
+            preset_desc->setText(QString::fromStdString(loaded_presets[0].description));
+        preset_layout->addWidget(preset_desc);
+
+        connect(preset_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [this](int idx)
+                {
+                    if (!preset_combo || idx < 0) return;
+                    const int preset_idx = preset_combo->itemData(idx).toInt();
+                    if (preset_idx < 0 || preset_idx >= (int)loaded_presets.size()) return;
+                    const auto& def = loaded_presets[preset_idx];
+                    preset_desc->setText(QString::fromStdString(def.description));
+                    apply_preset(def, s);
+                });
+
+        simplified_layout->addWidget(preset_frame);
+
+        simplified_placeholder = simplified_frame;
         if (ui.verticalLayout)
             ui.verticalLayout->insertWidget(2, simplified_placeholder);
         simplified_placeholder->setVisible(false);
@@ -589,14 +853,12 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
     advanced_canvas = new advanced_node_canvas(&s, this);
     if (advanced_canvas)
     {
-        advanced_canvas->setMinimumHeight(180);
         if (ui.verticalLayout)
             ui.verticalLayout->insertWidget(3, advanced_canvas);
         advanced_canvas->setVisible(false);
     }
 
     tie_setting(s.adaptive_mode, ui.adaptive_mode_check);
-    tie_setting(s.advanced_mode_ui, ui.advanced_mode_check);
     tie_setting(s.qualities_mode_ui, ui.qualities_mode_check);
     tie_setting(s.quality_stillness, ui.quality_stillness_check);
     tie_setting(s.quality_continuity, ui.quality_continuity_check);
@@ -610,7 +872,6 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
     tie_setting(s.chi_square_enabled, ui.chi_square_enabled_check);
     tie_setting(s.pareto_enabled, ui.pareto_enabled_check);
     tie_setting(s.outlier_quarantine_enabled, ui.outlier_quarantine_enabled_check);
-    tie_setting(s.mtm_enabled, ui.mtm_enabled_check);
 
     tie_setting(s.rot_alpha_min, ui.rot_min_slider);
     tie_setting(s.rot_alpha_max, ui.rot_max_slider);
@@ -643,9 +904,9 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
     tie_setting(s.pos_curve, ui.pos_curve_label,
                 [](double x) { return QStringLiteral("%1").arg(x, 0, 'f', 2); });
     tie_setting(s.rot_deadzone, ui.rot_deadzone_label,
-                [](double x) { return tr("%1°").arg(x, 0, 'f', 3); });
+                [](double x) { return tr("%1σ").arg(x, 0, 'f', 2); });
     tie_setting(s.pos_deadzone, ui.pos_deadzone_label,
-                [](double x) { return tr("%1mm").arg(x, 0, 'f', 3); });
+                [](double x) { return tr("%1σ").arg(x, 0, 'f', 2); });
     tie_setting(s.brownian_head_gain, ui.brownian_gain_label,
                 [](double x) { return QStringLiteral("%1x").arg(x, 0, 'f', 2); });
     tie_setting(s.adaptive_threshold_lift, ui.adaptive_threshold_label,
@@ -678,12 +939,11 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
     connect(ui.reset_defaults_button, &QPushButton::clicked, this,
             [this] { reset_to_defaults(); });
 
-    ui.advanced_mode_check->setVisible(false);
-
     auto apply_simple_alpha = [this](int slider_value) {
         const double t = std::clamp(static_cast<double>(slider_value) / ui.simple_alpha_slider->maximum(), 0.0, 1.0);
-        const double min_value = lerp(0.005, 0.4, t);
-        const double max_value = lerp(0.02, 1.0, t);
+        // t=1 (right) = most EMA smoothing = minimum alpha values
+        const double min_value = lerp(0.4, 0.005, t);
+        const double max_value = lerp(1.0, 0.02,  t);
 
         const auto rot_min_cfg = *s.rot_alpha_min;
         const auto rot_max_cfg = *s.rot_alpha_max;
@@ -695,7 +955,7 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
         s.pos_alpha_min = options::slider_value{min_value, pos_min_cfg.min(), pos_min_cfg.max()};
         s.pos_alpha_max = options::slider_value{max_value, pos_max_cfg.min(), pos_max_cfg.max()};
 
-        ui.simple_alpha_label->setText(QStringLiteral("Min %1% / Max %2%")
+        ui.simple_alpha_label->setText(QStringLiteral("EMA α: [%1%, %2%]")
                                            .arg(min_value * 100.0, 0, 'f', 1)
                                            .arg(max_value * 100.0, 0, 'f', 1));
     };
@@ -703,8 +963,8 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
     auto apply_simple_shape = [this](int slider_value) {
         const double t = std::clamp(static_cast<double>(slider_value) / ui.simple_shape_slider->maximum(), 0.0, 1.0);
         const double curve_value = lerp(0.2, 8.0, t);
-        const double rot_deadzone_value = lerp(0.0, 0.3, t);
-        const double pos_deadzone_value = lerp(0.0, 2.0, t);
+        const double rot_deadzone_value = lerp(0.0, 3.0, t);
+        const double pos_deadzone_value = lerp(0.0, 3.0, t);
 
         const auto rot_curve_cfg = *s.rot_curve;
         const auto pos_curve_cfg = *s.pos_curve;
@@ -716,10 +976,10 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
         s.rot_deadzone = options::slider_value{rot_deadzone_value, rot_deadzone_cfg.min(), rot_deadzone_cfg.max()};
         s.pos_deadzone = options::slider_value{pos_deadzone_value, pos_deadzone_cfg.min(), pos_deadzone_cfg.max()};
 
-        ui.simple_shape_label->setText(QStringLiteral("Curve %1 / RotDZ %2° / PosDZ %3mm")
+        ui.simple_shape_label->setText(QStringLiteral("Curve %1 / RotDZ %2σ / PosDZ %3σ")
                                            .arg(curve_value, 0, 'f', 2)
-                                           .arg(rot_deadzone_value, 0, 'f', 3)
-                                           .arg(pos_deadzone_value, 0, 'f', 3));
+                                           .arg(rot_deadzone_value, 0, 'f', 2)
+                                           .arg(pos_deadzone_value, 0, 'f', 2));
     };
 
     connect(ui.simple_alpha_slider, &QSlider::valueChanged, this, apply_simple_alpha);
@@ -729,9 +989,9 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
         auto& overlay = detail::alpha_spectrum::shared_quality_overlay_state();
         if (!*s.qualities_mode_ui)
         {
-            overlay.active.store(false, std::memory_order_relaxed);
+            overlay.active.store(false, mo);
             for (int j = 0; j < detail::alpha_spectrum::quality_overlay_state::value_count; j++)
-                overlay.delta[j].store(0.0, std::memory_order_relaxed);
+                overlay.delta[j].store(0.0, mo);
             return;
         }
 
@@ -759,9 +1019,9 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
             double delta = 0.0;
             for (int i = 0; i < static_cast<int>(q.size()); i++)
                 delta += q[i] * w[i][j];
-            overlay.delta[j].store(delta, std::memory_order_relaxed);
+            overlay.delta[j].store(delta, mo);
         }
-        overlay.active.store(true, std::memory_order_relaxed);
+        overlay.active.store(true, mo);
     };
 
     connect(ui.qualities_mode_check, &QCheckBox::toggled, this, [this, apply_attitude_projection](bool) {
@@ -780,52 +1040,73 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
     connect(ui.quality_pathology_defense_check, &QCheckBox::toggled, this, [apply_attitude_projection](bool) { apply_attitude_projection(); });
     connect(ui.quality_recovery_pace_check, &QCheckBox::toggled, this, [apply_attitude_projection](bool) { apply_attitude_projection(); });
 
-    if (ui.qualities_layout)
+    if (behavior_combo_ptr && behavior_desc_ptr)
     {
-        auto* bins_group = new QGroupBox(tr("Entropy Heat Map"), ui.qualities_frame);
-        auto* bins_grid = new QGridLayout(bins_group);
-        heatmap_mode_combo = new QComboBox(bins_group);
-        heatmap_mode_combo->addItem(tr("Occupancy"));
-        heatmap_mode_combo->addItem(tr("Delta"));
-        heatmap_mode_combo->addItem(tr("Conflict"));
-        heatmap_mode_combo->addItem(tr("Pathology"));
-        bins_grid->addWidget(new QLabel(tr("View"), bins_group), 0, 0);
-        bins_grid->addWidget(heatmap_mode_combo, 0, 1, 1, 4);
-
-        static const char* bin_names[] = {
-            "B1", "B2", "B3", "B4", "T1", "T2", "T3", "T4", "P1", "P2", "P3", "P4"
+        struct simplified_profile final {
+            const char* name;
+            const char* description;
+            bool  qualities_mode;
+            bool  stillness, continuity, robustness, decisiveness, pathology_def, recovery;
+            double alpha_smooth; // 1.0=max smoothing (min alpha), 0.0=max responsive (max alpha)
+            double dz;           // σ
+        };
+        static constexpr simplified_profile profiles[] = {
+            { "Raw (neutral)",
+              "Pure IMM output. No quality projection \xe2\x80\x94 heads compete on measured evidence alone. Use as a diagnostic baseline.",
+              false, false,false,false,false,false,false, 0.50, 0.00 },
+            { "Smooth Cruise",
+              "Heavy EMA smoothing with noise resistance. Best for slow deliberate head movement and flight-on-rails.",
+              true, true,false,true,false,false,false, 0.90, 0.40 },
+            { "Nimble",
+              "Fast, low-latency response with minimal smoothing. Suited for FPS and competitive play.",
+              true, false,true,false,true,false,false, 0.15, 0.00 },
+            { "Cockpit Precision",
+              "Tight deadzone and pathology protection for instrument flying. Holds steady; suppresses oscillation.",
+              true, true,false,true,false,true,false, 0.70, 0.60 },
+            { "Recovery Mode",
+              "Snaps back quickly after occlusion or large repositioning. Good for webcam and clip-on trackers.",
+              true, false,true,false,false,false,true, 0.50, 0.10 },
+            { "All Qualities",
+              "Activates every quality adaptation simultaneously. The filter self-tunes continuously \xe2\x80\x94 good all-purpose setting.",
+              true, true,true,true,true,true,true, 0.45, 0.25 },
         };
 
-        bins_grid->addWidget(new QLabel(tr("Row"), bins_group), 1, 0);
-        for (int i = 0; i < static_cast<int>(rot_bin_cells.size()); i++)
-            bins_grid->addWidget(new QLabel(QString::fromLatin1(bin_names[i]), bins_group), 1, i + 1);
+        for (const auto& p : profiles)
+            behavior_combo_ptr->addItem(tr(p.name));
+        behavior_desc_ptr->setText(tr(profiles[0].description));
 
-        bins_grid->addWidget(new QLabel(tr("Rot"), bins_group), 2, 0);
-        bins_grid->addWidget(new QLabel(tr("Pos"), bins_group), 3, 0);
-
-        for (int i = 0; i < static_cast<int>(rot_bin_cells.size()); i++)
-        {
-            auto* rot_cell = new QLabel(bins_group);
-            auto* pos_cell = new QLabel(bins_group);
-            rot_cell->setMinimumSize(18, 18);
-            pos_cell->setMinimumSize(18, 18);
-            rot_cell->setToolTip(QString::fromLatin1(bin_names[i]));
-            pos_cell->setToolTip(QString::fromLatin1(bin_names[i]));
-            bins_grid->addWidget(rot_cell, 2, i + 1);
-            bins_grid->addWidget(pos_cell, 3, i + 1);
-            rot_bin_cells[i] = rot_cell;
-            pos_bin_cells[i] = pos_cell;
-        }
-        ui.qualities_layout->addWidget(bins_group);
+        connect(behavior_combo_ptr, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [this, apply_attitude_projection, bd = behavior_desc_ptr](int idx) {
+                    if (idx < 0 || idx >= static_cast<int>(std::size(profiles))) return;
+                    const auto& p = profiles[idx];
+                    bd->setText(tr(p.description));
+                    s.qualities_mode_ui         = p.qualities_mode;
+                    s.quality_stillness         = p.stillness;
+                    s.quality_continuity        = p.continuity;
+                    s.quality_robustness        = p.robustness;
+                    s.quality_decisiveness      = p.decisiveness;
+                    s.quality_pathology_defense = p.pathology_def;
+                    s.quality_recovery_pace     = p.recovery;
+                    const double alpha_min = lerp(0.4,  0.005, p.alpha_smooth);
+                    const double alpha_max = lerp(1.0,  0.02,  p.alpha_smooth);
+                    s.rot_alpha_min = options::slider_value{alpha_min, 0.005, 0.4};
+                    s.rot_alpha_max = options::slider_value{alpha_max, 0.02,  1.0};
+                    s.pos_alpha_min = options::slider_value{alpha_min, 0.005, 0.4};
+                    s.pos_alpha_max = options::slider_value{alpha_max, 0.02,  1.0};
+                    s.rot_deadzone  = options::slider_value{p.dz, 0.0, 3.0};
+                    s.pos_deadzone  = options::slider_value{p.dz, 0.0, 3.0};
+                    apply_attitude_projection();
+                    s.b->save();
+                });
     }
 
     auto sync_simple_from_advanced = [this, apply_simple_alpha, apply_simple_shape] {
-        const double alpha_t = 0.5 * (norm(*s.rot_alpha_min, 0.005, 0.4) + norm(*s.rot_alpha_max, 0.02, 1.0));
+        const double alpha_t = 1.0 - 0.5 * (norm(*s.rot_alpha_min, 0.005, 0.4) + norm(*s.rot_alpha_max, 0.02, 1.0));
         const double shape_t = 0.25 * (
             norm(*s.rot_curve, 0.2, 8.0) +
             norm(*s.pos_curve, 0.2, 8.0) +
-            norm(*s.rot_deadzone, 0.0, 0.3) +
-            norm(*s.pos_deadzone, 0.0, 2.0));
+            norm(*s.rot_deadzone, 0.0, 3.0) +
+            norm(*s.pos_deadzone, 0.0, 3.0));
 
         {
             const QSignalBlocker b1(ui.simple_alpha_slider);
@@ -856,7 +1137,6 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
         ui.chi_square_enabled_check->setEnabled(adv);
         ui.pareto_enabled_check->setEnabled(adv);
         ui.outlier_quarantine_enabled_check->setEnabled(adv);
-        ui.mtm_enabled_check->setEnabled(adv);
     };
 
     auto apply_ui_mode = [this, update_advanced_visibility](int mode_value) {
@@ -866,8 +1146,6 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
         const bool is_basic = mode == static_cast<int>(ui_complexity_mode::basic);
         const bool is_simplified = mode == static_cast<int>(ui_complexity_mode::simplified);
         const bool is_advanced = mode == static_cast<int>(ui_complexity_mode::advanced);
-
-        s.advanced_mode_ui = is_advanced;
 
         ui.simple_controls_frame->setVisible(is_basic);
         if (simplified_placeholder)
@@ -881,7 +1159,6 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
         ui.chi_square_enabled_check->setVisible(false);
         ui.pareto_enabled_check->setVisible(false);
         ui.outlier_quarantine_enabled_check->setVisible(false);
-        ui.mtm_enabled_check->setVisible(false);
         ui.status_frame->setVisible(!is_basic);
         if (advanced_canvas)
             advanced_canvas->setVisible(is_advanced);
@@ -896,6 +1173,7 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
                     if (!ui_mode_combo)
                         return;
                     apply_ui_mode(ui_mode_combo->itemData(idx).toInt());
+                    s.b->save();
                 });
     }
 
@@ -959,79 +1237,61 @@ dialog_alpha_spectrum::dialog_alpha_spectrum()
 dialog_alpha_spectrum::~dialog_alpha_spectrum()
 {
     auto& overlay = detail::alpha_spectrum::shared_quality_overlay_state();
-    overlay.active.store(false, std::memory_order_relaxed);
+    overlay.active.store(false, mo);
     for (int j = 0; j < detail::alpha_spectrum::quality_overlay_state::value_count; j++)
-        overlay.delta[j].store(0.0, std::memory_order_relaxed);
-    detail::alpha_spectrum::shared_calibration_status().ui_open.store(false, std::memory_order_relaxed);
+        overlay.delta[j].store(0.0, mo);
+    detail::alpha_spectrum::shared_calibration_status().ui_open.store(false, mo);
 }
 
 void dialog_alpha_spectrum::pull_status_into_ui(bool commit_to_settings)
 {
     const auto& status = detail::alpha_spectrum::shared_calibration_status();
 
-    if (!status.ui_open.load(std::memory_order_relaxed) && !status.active.load(std::memory_order_relaxed) && !commit_to_settings)
+    if (!status.ui_open.load(mo) && !status.active.load(mo) && !commit_to_settings)
         return;
 
-    const double rot_min = status.rot_alpha_min.load(std::memory_order_relaxed);
-    const double rot_max = status.rot_alpha_max.load(std::memory_order_relaxed);
-    const double rot_curve = status.rot_curve.load(std::memory_order_relaxed);
-    const double rot_deadzone = status.rot_deadzone.load(std::memory_order_relaxed);
-    const double pos_min = status.pos_alpha_min.load(std::memory_order_relaxed);
-    const double pos_max = status.pos_alpha_max.load(std::memory_order_relaxed);
-    const double pos_curve = status.pos_curve.load(std::memory_order_relaxed);
-    const double pos_deadzone = status.pos_deadzone.load(std::memory_order_relaxed);
-    const double rot_jitter = status.rot_jitter.load(std::memory_order_relaxed);
-    const double pos_jitter = status.pos_jitter.load(std::memory_order_relaxed);
-    const double rot_objective = status.rot_objective.load(std::memory_order_relaxed);
-    const double pos_objective = status.pos_objective.load(std::memory_order_relaxed);
-    const double rot_brownian_raw = status.rot_brownian_raw.load(std::memory_order_relaxed);
-    const double rot_brownian_filtered = status.rot_brownian_filtered.load(std::memory_order_relaxed);
-    const double rot_brownian_delta = status.rot_brownian_delta.load(std::memory_order_relaxed);
-    const double rot_brownian_damped = status.rot_brownian_damped.load(std::memory_order_relaxed);
-    const double rot_predictive_error = status.rot_predictive_error.load(std::memory_order_relaxed);
-    const double pos_brownian_raw = status.pos_brownian_raw.load(std::memory_order_relaxed);
-    const double pos_brownian_filtered = status.pos_brownian_filtered.load(std::memory_order_relaxed);
-    const double pos_brownian_delta = status.pos_brownian_delta.load(std::memory_order_relaxed);
-    const double pos_brownian_damped = status.pos_brownian_damped.load(std::memory_order_relaxed);
-    const double pos_predictive_error = status.pos_predictive_error.load(std::memory_order_relaxed);
-    const double rot_ema_drive = status.rot_ema_drive.load(std::memory_order_relaxed);
-    const double rot_brownian_drive = status.rot_brownian_drive.load(std::memory_order_relaxed);
-    const double rot_adaptive_drive = status.rot_adaptive_drive.load(std::memory_order_relaxed);
-    const double rot_predictive_drive = status.rot_predictive_drive.load(std::memory_order_relaxed);
-    const double rot_mtm_drive = status.rot_mtm_drive.load(std::memory_order_relaxed);
-    const double pos_ema_drive = status.pos_ema_drive.load(std::memory_order_relaxed);
-    const double pos_brownian_drive = status.pos_brownian_drive.load(std::memory_order_relaxed);
-    const double pos_adaptive_drive = status.pos_adaptive_drive.load(std::memory_order_relaxed);
-    const double pos_predictive_drive = status.pos_predictive_drive.load(std::memory_order_relaxed);
-    const double pos_mtm_drive = status.pos_mtm_drive.load(std::memory_order_relaxed);
-    const double rot_mode_expectation = status.rot_mode_expectation.load(std::memory_order_relaxed);
-    const double pos_mode_expectation = status.pos_mode_expectation.load(std::memory_order_relaxed);
-    const double rot_mode_peak = status.rot_mode_peak.load(std::memory_order_relaxed);
-    const double pos_mode_peak = status.pos_mode_peak.load(std::memory_order_relaxed);
-    const double rot_mode_purity = status.rot_mode_purity.load(std::memory_order_relaxed);
-    const double pos_mode_purity = status.pos_mode_purity.load(std::memory_order_relaxed);
-    const double ngc_coupling_residual = status.ngc_coupling_residual.load(std::memory_order_relaxed);
-    const double outlier_quarantine_activity = status.outlier_quarantine_activity.load(std::memory_order_relaxed);
-    std::array<double, detail::alpha_spectrum::calibration_status::bin_count> rot_bins {};
-    std::array<double, detail::alpha_spectrum::calibration_status::bin_count> pos_bins {};
-    std::array<double, detail::alpha_spectrum::calibration_status::bin_count> rot_delta_bins {};
-    std::array<double, detail::alpha_spectrum::calibration_status::bin_count> pos_delta_bins {};
-    std::array<double, detail::alpha_spectrum::calibration_status::bin_count> rot_conflict_bins {};
-    std::array<double, detail::alpha_spectrum::calibration_status::bin_count> pos_conflict_bins {};
-    std::array<double, detail::alpha_spectrum::calibration_status::bin_count> rot_pathology_bins {};
-    std::array<double, detail::alpha_spectrum::calibration_status::bin_count> pos_pathology_bins {};
-    for (int i = 0; i < static_cast<int>(rot_bins.size()); i++)
-    {
-        rot_bins[i] = status.rot_bin_prob[i].load(std::memory_order_relaxed);
-        pos_bins[i] = status.pos_bin_prob[i].load(std::memory_order_relaxed);
-        rot_delta_bins[i] = status.rot_bin_delta[i].load(std::memory_order_relaxed);
-        pos_delta_bins[i] = status.pos_bin_delta[i].load(std::memory_order_relaxed);
-        rot_conflict_bins[i] = status.rot_bin_conflict[i].load(std::memory_order_relaxed);
-        pos_conflict_bins[i] = status.pos_bin_conflict[i].load(std::memory_order_relaxed);
-        rot_pathology_bins[i] = status.rot_bin_pathology[i].load(std::memory_order_relaxed);
-        pos_pathology_bins[i] = status.pos_bin_pathology[i].load(std::memory_order_relaxed);
-    }
-    const bool active = status.active.load(std::memory_order_relaxed);
+    const double rot_min = status.rot_alpha_min.load(mo);
+    const double rot_max = status.rot_alpha_max.load(mo);
+    const double rot_curve = status.rot_curve.load(mo);
+    const double rot_deadzone = status.rot_deadzone.load(mo);
+    const double pos_min = status.pos_alpha_min.load(mo);
+    const double pos_max = status.pos_alpha_max.load(mo);
+    const double pos_curve = status.pos_curve.load(mo);
+    const double pos_deadzone = status.pos_deadzone.load(mo);
+    const double rot_jitter            = status.jitter.rot.load(mo);
+    const double pos_jitter            = status.jitter.pos.load(mo);
+    const double rot_objective         = status.objective.rot.load(mo);
+    const double pos_objective         = status.objective.pos.load(mo);
+    const double rot_brownian_raw      = status.brownian_raw.rot.load(mo);
+    const double rot_brownian_filtered = status.brownian_filtered.rot.load(mo);
+    const double rot_brownian_delta    = status.brownian_delta.rot.load(mo);
+    const double rot_brownian_damped   = status.brownian_damped.rot.load(mo);
+    const double rot_predictive_error  = status.predictive_error.rot.load(mo);
+    const double pos_brownian_raw      = status.brownian_raw.pos.load(mo);
+    const double pos_brownian_filtered = status.brownian_filtered.pos.load(mo);
+    const double pos_brownian_delta    = status.brownian_delta.pos.load(mo);
+    const double pos_brownian_damped   = status.brownian_damped.pos.load(mo);
+    const double pos_predictive_error  = status.predictive_error.pos.load(mo);
+    namespace as = detail::alpha_spectrum;
+    const double rot_ema_drive        = status.rot_drive[as::index(as::tracking_head::ema)].load(mo);
+    const double rot_brownian_drive   = status.rot_drive[as::index(as::tracking_head::brownian)].load(mo);
+    const double rot_adaptive_drive   = status.rot_drive[as::index(as::tracking_head::adaptive)].load(mo);
+    const double rot_predictive_drive = status.rot_drive[as::index(as::tracking_head::predictive)].load(mo);
+    const double rot_mtm_drive        = status.mtm_drive.rot.load(mo);
+    const double pos_ema_drive        = status.pos_drive[as::index(as::tracking_head::ema)].load(mo);
+    const double pos_brownian_drive   = status.pos_drive[as::index(as::tracking_head::brownian)].load(mo);
+    const double pos_adaptive_drive   = status.pos_drive[as::index(as::tracking_head::adaptive)].load(mo);
+    const double pos_predictive_drive = status.pos_drive[as::index(as::tracking_head::predictive)].load(mo);
+    const double pos_mtm_drive        = status.mtm_drive.pos.load(mo);
+    const double rot_mode_expectation = status.mode_expectation.rot.load(mo);
+    const double pos_mode_expectation = status.mode_expectation.pos.load(mo);
+    const double rot_mode_peak        = status.mode_peak.rot.load(mo);
+    const double pos_mode_peak        = status.mode_peak.pos.load(mo);
+    const double rot_mode_purity      = status.mode_purity.rot.load(mo);
+    const double pos_mode_purity      = status.mode_purity.pos.load(mo);
+    const double ngc_coupling_residual = status.ngc_coupling_residual.load(mo);
+    const double outlier_quarantine_activity = status.outlier_quarantine_activity.load(mo);
+    const bool active = status.active.load(mo);
 
     {
         const QSignalBlocker b1(ui.rot_min_slider);
@@ -1065,11 +1325,11 @@ void dialog_alpha_spectrum::pull_status_into_ui(bool commit_to_settings)
     ui.rot_min_label->setText(QStringLiteral("%1%").arg(rot_min * 100.0, 0, 'f', 1));
     ui.rot_max_label->setText(QStringLiteral("%1%").arg(rot_max * 100.0, 0, 'f', 1));
     ui.rot_curve_label->setText(QStringLiteral("%1").arg(rot_curve, 0, 'f', 2));
-    ui.rot_deadzone_label->setText(tr("%1°").arg(rot_deadzone, 0, 'f', 3));
+    ui.rot_deadzone_label->setText(tr("%1σ").arg(rot_deadzone, 0, 'f', 2));
     ui.pos_min_label->setText(QStringLiteral("%1%").arg(pos_min * 100.0, 0, 'f', 1));
     ui.pos_max_label->setText(QStringLiteral("%1%").arg(pos_max * 100.0, 0, 'f', 1));
     ui.pos_curve_label->setText(QStringLiteral("%1").arg(pos_curve, 0, 'f', 2));
-    ui.pos_deadzone_label->setText(tr("%1mm").arg(pos_deadzone, 0, 'f', 3));
+    ui.pos_deadzone_label->setText(tr("%1σ").arg(pos_deadzone, 0, 'f', 2));
 
     ui.info_rot_value->setText(QStringLiteral("%1 / %2")
                                         .arg(rot_jitter, 0, 'f', 4)
@@ -1099,8 +1359,8 @@ void dialog_alpha_spectrum::pull_status_into_ui(bool commit_to_settings)
             .arg(rot_brownian_drive, 0, 'f', 3)
             .arg(rot_adaptive_drive, 0, 'f', 3)
             .arg(rot_predictive_drive, 0, 'f', 3)
-            .arg(status.rot_chi_square_drive.load(std::memory_order_relaxed), 0, 'f', 3)
-            .arg(status.rot_pareto_drive.load(std::memory_order_relaxed), 0, 'f', 3)
+            .arg(status.rot_drive[as::index(as::tracking_head::chi_square)].load(mo), 0, 'f', 3)
+            .arg(status.rot_drive[as::index(as::tracking_head::pareto)].load(mo), 0, 'f', 3)
             .arg(rot_mtm_drive, 0, 'f', 3));
     ui.info_pos_contrib_value->setText(
         QStringLiteral("EMA:%1 Br:%2 Ad:%3 Pr:%4 Cs:%5 Pa:%6 MTM:%7")
@@ -1108,17 +1368,16 @@ void dialog_alpha_spectrum::pull_status_into_ui(bool commit_to_settings)
             .arg(pos_brownian_drive, 0, 'f', 3)
             .arg(pos_adaptive_drive, 0, 'f', 3)
             .arg(pos_predictive_drive, 0, 'f', 3)
-            .arg(status.pos_chi_square_drive.load(std::memory_order_relaxed), 0, 'f', 3)
-            .arg(status.pos_pareto_drive.load(std::memory_order_relaxed), 0, 'f', 3)
+            .arg(status.pos_drive[as::index(as::tracking_head::chi_square)].load(mo), 0, 'f', 3)
+            .arg(status.pos_drive[as::index(as::tracking_head::pareto)].load(mo), 0, 'f', 3)
             .arg(pos_mtm_drive, 0, 'f', 3));
     ui.status_value->setText(
         active ?
-            QStringLiteral("Mon|E%1 B%2 A%3 P%4 M%5|rE%6 rP%7 pE%8 pP%9 rQ%10 pQ%11 k%12")
+            QStringLiteral("Mon|E%1 B%2 A%3 P%4|rE%5 rP%6 pE%7 pP%8 rQ%9 pQ%10 k%11")
                 .arg(*s.ema_enabled ? 1 : 0)
                 .arg(*s.brownian_enabled ? 1 : 0)
                 .arg(*s.adaptive_mode ? 1 : 0)
                 .arg(*s.predictive_enabled ? 1 : 0)
-                .arg(*s.mtm_enabled ? 1 : 0)
                 .arg(rot_mode_expectation, 5, 'f', 3)
                 .arg(rot_mode_peak, 5, 'f', 3)
                 .arg(pos_mode_expectation, 5, 'f', 3)
@@ -1127,23 +1386,6 @@ void dialog_alpha_spectrum::pull_status_into_ui(bool commit_to_settings)
                 .arg(pos_mode_purity, 5, 'f', 3)
                 .arg(ngc_coupling_residual, 5, 'f', 3)
             : tr("Idle"));
-
-    const int heatmap_mode = heatmap_mode_combo ? heatmap_mode_combo->currentIndex() : 0;
-    const auto& rot_heat = heatmap_mode == 0 ? rot_bins : heatmap_mode == 1 ? rot_delta_bins : heatmap_mode == 2 ? rot_conflict_bins : rot_pathology_bins;
-    const auto& pos_heat = heatmap_mode == 0 ? pos_bins : heatmap_mode == 1 ? pos_delta_bins : heatmap_mode == 2 ? pos_conflict_bins : pos_pathology_bins;
-    for (int i = 0; i < static_cast<int>(rot_bin_cells.size()); i++)
-    {
-        if (rot_bin_cells[i])
-        {
-            rot_bin_cells[i]->setStyleSheet(heatmap_cell_style(rot_heat[i], heatmap_mode));
-            rot_bin_cells[i]->setToolTip(QStringLiteral("rot %1 = %2").arg(i).arg(rot_heat[i], 0, 'f', 4));
-        }
-        if (pos_bin_cells[i])
-        {
-            pos_bin_cells[i]->setStyleSheet(heatmap_cell_style(pos_heat[i], heatmap_mode));
-            pos_bin_cells[i]->setToolTip(QStringLiteral("pos %1 = %2").arg(i).arg(pos_heat[i], 0, 'f', 4));
-        }
-    }
 
     QStringList active_qualities;
     if (*s.quality_stillness) active_qualities << tr("Stillness");
@@ -1155,10 +1397,10 @@ void dialog_alpha_spectrum::pull_status_into_ui(bool commit_to_settings)
 
     const QString quality_text = active_qualities.isEmpty() ? tr("none") : active_qualities.join(QStringLiteral(", "));
     ui.qualities_state_label->setText(
-        tr("Alchemy state: [%1] | rot bins %2 | pos bins %3 | quarantine %4%")
+        tr("Alchemy state: [%1] | rot purity %2 | pos purity %3 | quarantine %4%")
             .arg(quality_text)
-            .arg(top_bin_summary(rot_bins))
-            .arg(top_bin_summary(pos_bins))
+            .arg(rot_mode_purity, 0, 'f', 3)
+            .arg(pos_mode_purity, 0, 'f', 3)
             .arg(outlier_quarantine_activity * 100.0, 0, 'f', 1));
 
     if (commit_to_settings)
@@ -1209,23 +1451,21 @@ void dialog_alpha_spectrum::reset_to_defaults()
     s.chi_square_enabled.set_to_default();
     s.pareto_enabled.set_to_default();
     s.outlier_quarantine_enabled.set_to_default();
-    s.mtm_enabled.set_to_default();
-    s.advanced_mode_ui.set_to_default();
 
     auto& overlay = detail::alpha_spectrum::shared_quality_overlay_state();
-    overlay.active.store(false, std::memory_order_relaxed);
+    overlay.active.store(false, mo);
     for (int j = 0; j < detail::alpha_spectrum::quality_overlay_state::value_count; j++)
-        overlay.delta[j].store(0.0, std::memory_order_relaxed);
+        overlay.delta[j].store(0.0, mo);
 
     s.b->save();
     s.b->reload();
 
-    const double alpha_t = 0.5 * (norm(*s.rot_alpha_min, 0.005, 0.4) + norm(*s.rot_alpha_max, 0.02, 1.0));
+    const double alpha_t = 1.0 - 0.5 * (norm(*s.rot_alpha_min, 0.005, 0.4) + norm(*s.rot_alpha_max, 0.02, 1.0));
     const double shape_t = 0.25 * (
         norm(*s.rot_curve, 0.2, 8.0) +
         norm(*s.pos_curve, 0.2, 8.0) +
-        norm(*s.rot_deadzone, 0.0, 0.3) +
-        norm(*s.pos_deadzone, 0.0, 2.0));
+        norm(*s.rot_deadzone, 0.0, 3.0) +
+        norm(*s.pos_deadzone, 0.0, 3.0));
 
     {
         const QSignalBlocker b1(ui.simple_alpha_slider);
@@ -1234,13 +1474,13 @@ void dialog_alpha_spectrum::reset_to_defaults()
         ui.simple_shape_slider->setValue(static_cast<int>(shape_t * ui.simple_shape_slider->maximum()));
     }
 
-    ui.simple_alpha_label->setText(QStringLiteral("Min %1% / Max %2%")
+    ui.simple_alpha_label->setText(QStringLiteral("EMA α: [%1%, %2%]")
                                        .arg((*s.rot_alpha_min) * 100.0, 0, 'f', 1)
                                        .arg((*s.rot_alpha_max) * 100.0, 0, 'f', 1));
-    ui.simple_shape_label->setText(QStringLiteral("Curve %1 / RotDZ %2° / PosDZ %3mm")
+    ui.simple_shape_label->setText(QStringLiteral("Curve %1 / RotDZ %2σ / PosDZ %3σ")
                                        .arg(static_cast<double>(*s.rot_curve), 0, 'f', 2)
-                                       .arg(static_cast<double>(*s.rot_deadzone), 0, 'f', 3)
-                                       .arg(static_cast<double>(*s.pos_deadzone), 0, 'f', 3));
+                                       .arg(static_cast<double>(*s.rot_deadzone), 0, 'f', 2)
+                                       .arg(static_cast<double>(*s.pos_deadzone), 0, 'f', 2));
 
     const int reset_mode = sanitize_ui_mode(*s.ui_complexity_mode);
     if (ui_mode_combo)
@@ -1260,7 +1500,6 @@ void dialog_alpha_spectrum::reset_to_defaults()
     ui.chi_square_enabled_check->setEnabled(reset_adv_controls);
     ui.pareto_enabled_check->setEnabled(reset_adv_controls);
     ui.outlier_quarantine_enabled_check->setEnabled(reset_adv_controls);
-    ui.mtm_enabled_check->setEnabled(reset_adv_controls);
 }
 
 void dialog_alpha_spectrum::doOK()

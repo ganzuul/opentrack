@@ -3,11 +3,13 @@
 #include "api/plugin-api.hpp"
 #include "compat/timer.hpp"
 #include "alpha-spectrum-settings.hpp"
+#include "alpha-spectrum-governance.hpp"
 #include "ui_ftnoir_alpha_spectrum_filtercontrols.h"
 
 #include <atomic>
 #include <array>
 #include <chrono>
+#include <vector>
 
 class QProgressBar;
 class QLabel;
@@ -15,16 +17,6 @@ class QComboBox;
 class QWidget;
 
 namespace detail::alpha_spectrum {
-
-enum class tracking_head : size_t {
-    ema = 0,
-    brownian,
-    adaptive,
-    predictive,
-    chi_square,
-    pareto,
-    head_count
-};
 
 static constexpr size_t transition_matrix_dim = static_cast<size_t>(tracking_head::head_count);
 static constexpr size_t transition_matrix_size = transition_matrix_dim * transition_matrix_dim;
@@ -60,6 +52,11 @@ struct temporal_economy_state final
     }
 };
 
+// Atomic rot/pos pair for calibration_status fields.
+struct ap final { std::atomic<double> rot {0.0}, pos {0.0}; };
+// Plain rot/pos pair for filter() accumulation locals.
+struct rp final { double rot = 0.0, pos = 0.0; };
+
 // Shared diagnostics exposed to the settings dialog.
 // Note: this is runtime status, not persistent profile state.
 struct calibration_status final
@@ -67,40 +64,11 @@ struct calibration_status final
     static constexpr int bin_count = 12;
     std::atomic<bool> ui_open {false};
     std::atomic<bool> active {false};
-    std::atomic<double> rot_objective {0.0};
-    std::atomic<double> pos_objective {0.0};
-    std::atomic<double> rot_jitter {0.0};
-    std::atomic<double> pos_jitter {0.0};
-    std::atomic<double> rot_brownian_raw {0.0};
-    std::atomic<double> rot_brownian_filtered {0.0};
-    std::atomic<double> rot_brownian_delta {0.0};
-    std::atomic<double> rot_brownian_damped {0.0};
-    std::atomic<double> rot_predictive_error {0.0};
-    std::atomic<double> pos_brownian_raw {0.0};
-    std::atomic<double> pos_brownian_filtered {0.0};
-    std::atomic<double> pos_brownian_delta {0.0};
-    std::atomic<double> pos_brownian_damped {0.0};
-    std::atomic<double> pos_predictive_error {0.0};
-    std::atomic<double> rot_ema_drive {0.0};
-    std::atomic<double> rot_brownian_drive {0.0};
-    std::atomic<double> rot_adaptive_drive {0.0};
-    std::atomic<double> rot_predictive_drive {0.0};
-    std::atomic<double> rot_chi_square_drive {0.0};
-    std::atomic<double> rot_pareto_drive {0.0};
-    std::atomic<double> rot_mtm_drive {0.0};
-    std::atomic<double> pos_ema_drive {0.0};
-    std::atomic<double> pos_brownian_drive {0.0};
-    std::atomic<double> pos_adaptive_drive {0.0};
-    std::atomic<double> pos_predictive_drive {0.0};
-    std::atomic<double> pos_chi_square_drive {0.0};
-    std::atomic<double> pos_pareto_drive {0.0};
-    std::atomic<double> pos_mtm_drive {0.0};
-    std::atomic<double> rot_mode_expectation {0.0};
-    std::atomic<double> pos_mode_expectation {0.0};
-    std::atomic<double> rot_mode_peak {0.0};
-    std::atomic<double> pos_mode_peak {0.0};
-    std::atomic<double> rot_mode_purity {0.0};
-    std::atomic<double> pos_mode_purity {0.0};
+    ap objective, jitter;
+    ap brownian_raw, brownian_filtered, brownian_delta, brownian_damped, predictive_error;
+    std::array<std::atomic<double>, tracking_head_count> rot_drive {}, pos_drive {};
+    ap mtm_drive;
+    ap mode_expectation, mode_peak, mode_purity;
     std::atomic<double> ngc_coupling_residual {0.0};
     std::atomic<double> rot_alpha_min {.04};
     std::atomic<double> rot_alpha_max {.65};
@@ -115,6 +83,8 @@ struct calibration_status final
     std::atomic<double> outlier_quarantine_activity {0.0};
     std::atomic<double> pos_predictive_translation_error {0.0};
     std::atomic<double> invariant_correction_magnitude {0.0};
+    ap neck_weight_error, neck_invalid_ratio;
+    std::array<std::atomic<bool>, governance::canvas_edge_count> edge_valid {};
     std::atomic<bool> anomaly_active {false};
     std::array<std::atomic<double>, bin_count> rot_bin_prob {};
     std::array<std::atomic<double>, bin_count> pos_bin_prob {};
@@ -127,22 +97,15 @@ struct calibration_status final
 
     calibration_status()
     {
-        for (auto& x : rot_bin_prob)
-            x.store(0.0, std::memory_order_relaxed);
-        for (auto& x : pos_bin_prob)
-            x.store(0.0, std::memory_order_relaxed);
-        for (auto& x : rot_bin_delta)
-            x.store(0.0, std::memory_order_relaxed);
-        for (auto& x : pos_bin_delta)
-            x.store(0.0, std::memory_order_relaxed);
-        for (auto& x : rot_bin_conflict)
-            x.store(0.0, std::memory_order_relaxed);
-        for (auto& x : pos_bin_conflict)
-            x.store(0.0, std::memory_order_relaxed);
-        for (auto& x : rot_bin_pathology)
-            x.store(0.0, std::memory_order_relaxed);
-        for (auto& x : pos_bin_pathology)
-            x.store(0.0, std::memory_order_relaxed);
+        auto zero = [](auto& arr) {
+            for (auto& x : arr) x.store(0.0, std::memory_order_relaxed);
+        };
+        zero(rot_bin_prob); zero(pos_bin_prob);
+        zero(rot_bin_delta); zero(pos_bin_delta);
+        zero(rot_bin_conflict); zero(pos_bin_conflict);
+        zero(rot_bin_pathology); zero(pos_bin_pathology);
+        zero(rot_drive); zero(pos_drive);
+        for (auto& x : edge_valid) x.store(false, std::memory_order_relaxed);
     }
 };
 
@@ -162,6 +125,9 @@ struct quality_overlay_state final
 };
 
 quality_overlay_state& shared_quality_overlay_state();
+
+// Per-head scalar Kalman state: position estimate, velocity, and 2×2 covariance (upper triangle).
+struct imm_head_state final { double x = 0, v = 0, P_xx = 1, P_xv = 0, P_vv = 1; };
 
 } // ns detail::alpha_spectrum
 
@@ -184,8 +150,6 @@ private:
     static constexpr int mode_count = 12;
     static constexpr int hydra_head_capacity = 6;
     static constexpr double delta_rc = 1. / 90.;
-    static constexpr double activity_rc = .35;
-    static constexpr double adaptive_boost = .4;
     static constexpr double brownian_rc = .6;
     static constexpr double mode_diffusion_rc = .75;
     static constexpr double noise_rc_max = 30.;
@@ -201,8 +165,6 @@ private:
     double raw_brownian_energy[axis_count] {};
     double filtered_brownian_energy[axis_count] {};
     double predicted_next_output[axis_count] {};
-    double rot_activity = 0.;
-    double pos_activity = 0.;
     double noise_rc = 0.;
     double last_Z = 0.0;
     double coupling_residual = 0.0;
@@ -244,6 +206,12 @@ private:
     bool last_highrate_pose_valid = false;
     bool has_highrate_source = false;
 
+    // IMM per-head Kalman state and mode weights, both indexed [axis][head].
+    static constexpr size_t imm_head_count = detail::alpha_spectrum::tracking_head_count;
+    using imm_head_state = detail::alpha_spectrum::imm_head_state;
+    std::array<std::array<imm_head_state, imm_head_count>, axis_count> head_states {};
+    std::array<std::array<double,         imm_head_count>, axis_count> imm_weights {};
+
     void integrate_highrate_samples();
 };
 
@@ -264,11 +232,11 @@ private:
     Ui::UICdialog_alpha_spectrum ui;
     settings_alpha_spectrum s;
     QComboBox* ui_mode_combo = nullptr;
+    QComboBox* preset_combo = nullptr;
+    QLabel*    preset_desc = nullptr;
     QWidget* simplified_placeholder = nullptr;
     QWidget* advanced_canvas = nullptr;
-    QComboBox* heatmap_mode_combo = nullptr;
-    std::array<QLabel*, detail::alpha_spectrum::calibration_status::bin_count> rot_bin_cells {};
-    std::array<QLabel*, detail::alpha_spectrum::calibration_status::bin_count> pos_bin_cells {};
+    std::vector<detail::alpha_spectrum::preset_def> loaded_presets;
     void pull_status_into_ui(bool commit_to_settings);
     void reset_to_defaults();
 

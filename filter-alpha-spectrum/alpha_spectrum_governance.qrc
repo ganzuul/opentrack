@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/alpha-spectrum/governance">
+        <file>governance/feature-whitelist.yaml</file>
+    </qresource>
+</RCC>

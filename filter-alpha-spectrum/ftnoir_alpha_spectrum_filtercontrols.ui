@@ -33,7 +33,7 @@
      <item row="0" column="0">
       <widget class="QLabel" name="simple_alpha_text">
        <property name="text">
-        <string>EMA Min/Max Range</string>
+        <string>EMA Smoothing  (← Responsive | Smooth →)</string>
        </property>
       </widget>
      </item>
@@ -157,7 +157,7 @@
     <item>
      <widget class="QFrame" name="frame">
       <layout class="QGridLayout" name="gridLayout">
-      <item row="0" column="0" colspan="3"><widget class="QLabel" name="core_column_title"><property name="text"><string>Core EMA Controls</string></property></widget></item>
+      <item row="0" column="0" colspan="3"><widget class="QLabel" name="core_column_title"><property name="text"><string>Filter Shape / IMM Deadzone</string></property></widget></item>
       <item row="1" column="0"><widget class="QLabel" name="rot_min_text"><property name="text"><string>Rotation Min</string></property></widget></item>
       <item row="1" column="1"><widget class="QSlider" name="rot_min_slider"><property name="maximum"><number>3950</number></property><property name="singleStep"><number>10</number></property><property name="pageStep"><number>100</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
       <item row="1" column="2"><widget class="QLabel" name="rot_min_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0%</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
@@ -169,7 +169,7 @@
       <item row="3" column="2"><widget class="QLabel" name="rot_curve_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0.00</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
       <item row="4" column="0"><widget class="QLabel" name="rot_deadzone_text"><property name="text"><string>Rotation Deadzone</string></property></widget></item>
       <item row="4" column="1"><widget class="QSlider" name="rot_deadzone_slider"><property name="maximum"><number>3000</number></property><property name="singleStep"><number>10</number></property><property name="pageStep"><number>100</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
-      <item row="4" column="2"><widget class="QLabel" name="rot_deadzone_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0°</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
+      <item row="4" column="2"><widget class="QLabel" name="rot_deadzone_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0.0σ</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
       <item row="5" column="0"><widget class="QLabel" name="pos_min_text"><property name="text"><string>Translation Min</string></property></widget></item>
       <item row="5" column="1"><widget class="QSlider" name="pos_min_slider"><property name="maximum"><number>3950</number></property><property name="singleStep"><number>10</number></property><property name="pageStep"><number>100</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
       <item row="5" column="2"><widget class="QLabel" name="pos_min_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0%</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
@@ -181,7 +181,7 @@
       <item row="7" column="2"><widget class="QLabel" name="pos_curve_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0.00</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
       <item row="8" column="0"><widget class="QLabel" name="pos_deadzone_text"><property name="text"><string>Translation Deadzone</string></property></widget></item>
       <item row="8" column="1"><widget class="QSlider" name="pos_deadzone_slider"><property name="maximum"><number>20000</number></property><property name="singleStep"><number>20</number></property><property name="pageStep"><number>200</number></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
-      <item row="8" column="2"><widget class="QLabel" name="pos_deadzone_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0mm</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
+      <item row="8" column="2"><widget class="QLabel" name="pos_deadzone_label"><property name="minimumSize"><size><width>64</width><height>0</height></size></property><property name="text"><string>0.0σ</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
       </layout>
      </widget>
     </item>
@@ -195,16 +195,6 @@
       </property>
       <property name="checked">
       <bool>false</bool>
-      </property>
-     </widget>
-    </item>
-    <item>
-     <widget class="QCheckBox" name="advanced_mode_check">
-      <property name="text">
-       <string>Advanced</string>
-      </property>
-      <property name="checked">
-       <bool>false</bool>
       </property>
      </widget>
     </item>
@@ -333,16 +323,6 @@
      <widget class="QCheckBox" name="outlier_quarantine_enabled_check">
       <property name="text">
        <string>Enable entropy outlier quarantine</string>
-      </property>
-      <property name="checked">
-       <bool>true</bool>
-      </property>
-     </widget>
-    </item>
-    <item>
-     <widget class="QCheckBox" name="mtm_enabled_check">
-      <property name="text">
-       <string>Enable Rényi MTM shoulder composition</string>
       </property>
       <property name="checked">
        <bool>true</bool>
