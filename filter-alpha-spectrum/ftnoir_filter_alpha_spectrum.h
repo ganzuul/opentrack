@@ -165,6 +165,9 @@ private:
     double raw_brownian_energy[axis_count] {};
     double filtered_brownian_energy[axis_count] {};
     double predicted_next_output[axis_count] {};
+    // Per-axis divot sticktion state.
+    double stillness_anchor[axis_count] {};
+    double escape_level[axis_count] {};
     double noise_rc = 0.;
     double last_Z = 0.0;
     double coupling_residual = 0.0;

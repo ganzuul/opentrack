@@ -375,7 +375,9 @@ static neck_compose_result compose_renyi_neck(
         if (!std::isfinite(heads[h].sample))
             invalid_edges++;
         out.edges[h] = {heads[h].kind, sample, residual, mahalanobis_sq, likelihood, 0.0, heads[h].evidence, 0u, false};
-        sum += likelihood;
+        // Neck weight is likelihood gated by head evidence.
+        // Raw likelihood is preserved in the edge for IMM weight update (uses pure Rényi L).
+        sum += likelihood * std::max(heads[h].evidence, 1e-9);
     }
 
     if (sum <= 1e-15)
@@ -387,7 +389,8 @@ static neck_compose_result compose_renyi_neck(
     else
     {
         for (int h = 0; h < head_count; h++)
-            out.edges[h].normalized_weight = out.edges[h].likelihood / sum;
+            out.edges[h].normalized_weight =
+                (out.edges[h].likelihood * std::max(out.edges[h].evidence, 1e-9)) / sum;
     }
 
     for (int h = 0; h < head_count; h++)
@@ -718,6 +721,8 @@ void alpha_spectrum::filter(const double* input, double* output)
                 hs = {input[j], 0.0, 1.0, 0.0, 1.0};
             imm_weights[j].fill(1.0 / static_cast<double>(head_states[j].size()));
         }
+        std::copy(input, input + axis_count, stillness_anchor);
+        std::fill(escape_level, escape_level + axis_count, 1.0);  // Start fully escaped — no initial freeze.
         std::copy(last_output, last_output + axis_count, output);
         return;
     }
@@ -869,9 +874,12 @@ void alpha_spectrum::filter(const double* input, double* output)
 
         const double raw_brownian      = std::sqrt(std::max(raw_brownian_energy[i], 0.0));
         const double filtered_brownian = std::sqrt(std::max(filtered_brownian_energy[i], 0.0));
+        // Brownian evidence = filtered/raw energy ratio.
+        // HIGH when filter tracks genuine motion (energies match).
+        // LOW when filter suppresses jitter (filtered << raw) — prevents noise amplification.
         const double tuned_brownian_drive =
             brownian_enabled && raw_brownian > 1e-12
-                ? clamp01((1.0 - filtered_brownian / raw_brownian) * brownian_head_gain)
+                ? clamp01((filtered_brownian / raw_brownian) * brownian_head_gain)
                 : 0.0;
 
         const double sigma2 = std::max(last_noise[i], 1e-8);
@@ -884,7 +892,9 @@ void alpha_spectrum::filter(const double* input, double* output)
         const double chi_confidence = clamp01((chi_sq_thresh - chi_sq_innov) / chi_sq_thresh);
         const double pareto_scaled  = std::fabs(input_value - filtered_prev) /
                                       (std::sqrt(std::max(sigma2, 1e-9)) + 1e-9);
-        const double pareto_weight  = std::pow(1.0 + pareto_scaled, -1.5);
+        // Pareto evidence: threshold-based saccade gate.
+        // 0 below 1.5σ (normal motion), ramps to 1.0 at 3.5σ (large saccade).
+        const double pareto_weight  = clamp01((pareto_scaled - 1.5) / 2.0);
         const double gate           = remap_with_threshold(norm_innovation, adaptive_threshold_lift);
 
         std::array<neck_head_candidate, hydra_head_capacity_local> heads {};
@@ -980,25 +990,44 @@ void alpha_spectrum::filter(const double* input, double* output)
             composed_output = filtered_prev + shoulder_gain * (neck.hydra_sample - filtered_prev);
         }
 
-        // IMM-consensus Mahalanobis deadzone — applied after neck composition so pos and rot
-        // are fully independent, and each head's covariance contributes through IMM weights.
-        // dz is in σ units: suppress output movement until the IMM-weighted innovation
-        // exceeds dz standard deviations of the filter's own uncertainty estimate.
-        // dz=0 → disabled; noise floor is fully visible.
+        // Divot sticktion — last-resort jitter catch.
+        // Holds output absolutely still at stillness_anchor until evidence channels confirm
+        // genuine intentional motion, then smoothly anti-inertia releases toward composed_output.
+        // No binary threshold: escape_level is continuous → no stepping grid artifact.
+        // dz=0 → disabled; dz>0 → sticktion strength (evidence required to escape the divot).
         {
             const double dz = is_rotation ? rot_deadzone : pos_deadzone;
             if (dz > 0.0)
             {
-                double x_imm = 0.0, P_imm = 0.0;
-                for (size_t j = 0; j < as::tracking_head_count; j++)
-                {
-                    const double w = imm_weights[i][j];
-                    x_imm += w * head_states[i][j].x;
-                    P_imm += w * head_states[i][j].P_xx;
-                }
-                const double innov_sq = (input_value - x_imm) * (input_value - x_imm);
-                if (innov_sq < dz * dz * std::max(P_imm, 1e-9))
-                    composed_output = filtered_prev;
+                // Composite motion confidence from all evidence channels (inclusive OR).
+                // pareto_weight       : large saccade (>1.5σ) — escape immediately
+                // gate                : above-noise adaptive innovation
+                // tuned_brownian_drive: energy ratio HIGH when filter tracks genuine motion
+                const double motion_conf = std::max({pareto_weight, gate, tuned_brownian_drive});
+
+                // Stiction threshold scales with dz: dz=1→0.25, dz=2→0.50, dz=3→0.75.
+                // Only motion confidence above this level contributes to escape.
+                const double stiction_thresh = std::min(dz * 0.25, 0.85);
+                const double mc_above        = clamp01(
+                    (motion_conf - stiction_thresh) / std::max(1.0 - stiction_thresh, 1e-6));
+
+                // Fast attack: strong evidence → release quickly.
+                // Fast settle: motion ends → snap to divot at new position with no jump.
+                const double alpha_attack = clamp01(1.0 - std::exp(-mc_above * 50.0 * safe_dt));
+                const double alpha_settle = clamp01(1.0 - std::exp(-12.0 * safe_dt));
+                const double alpha        = (mc_above > escape_level[i]) ? alpha_attack : alpha_settle;
+                escape_level[i]           = clamp01(escape_level[i] + alpha * (mc_above - escape_level[i]));
+
+                // Anchor tracks composed_output only when escaping (quadratic gate).
+                // Freezes sharply at the divot bottom — zero drift when still.
+                // When fully escaped anchor ≈ composed_output so re-settling lands at
+                // the current true position with no discontinuity.
+                const double eff_escape  = (escape_level[i] > 0.05) ? escape_level[i] : 0.0;
+                stillness_anchor[i]     += eff_escape * eff_escape * (composed_output - stillness_anchor[i]);
+
+                // Blend: escape_level=0 → frozen at anchor; escape_level=1 → full pass-through.
+                // The gradual escape ramp provides the anti-inertia glide with no drag once free.
+                composed_output = stillness_anchor[i] + escape_level[i] * (composed_output - stillness_anchor[i]);
             }
         }
 
