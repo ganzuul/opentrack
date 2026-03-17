@@ -1,0 +1,29 @@
+# Alpha Spectrum preset: EMA Foundation
+#
+# Single-head baseline. EMA is the geometry anchor for the entire filter;
+# all spatial coupling goes through EMA's deadzone and alpha range.
+# Good starting point for calibration and diagnosing tracking issues.
+
+name: "EMA Foundation"
+description: "Geometry-anchored single-head baseline. All spatial parameters are controlled by EMA alone. Good for initial calibration."
+
+adaptive-mode: false
+
+heads:
+  ema: true
+  brownian: false
+  adaptive: false
+  predictive: false
+  chi-square: false
+  pareto: false
+  mtm: false
+
+params:
+  rot-alpha-min: 0.07
+  rot-alpha-max: 0.20
+  rot-curve: 4.5
+  pos-alpha-min: 0.07
+  pos-alpha-max: 0.20
+  pos-curve: 4.5
+  rot-deadzone: 0.18
+  pos-deadzone: 1.2

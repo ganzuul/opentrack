@@ -1,0 +1,30 @@
+# Alpha Spectrum preset: Full Ensemble
+#
+# All six heads active, MTM shoulder engaged, adaptive mode on.
+# Chi-square and Pareto add statistical robustness; predictive head
+# reduces latency artifact during intentional movement.
+# Requires a stable, well-calibrated tracker for best results.
+
+name: "Full Ensemble"
+description: "All heads active with adaptive mode. Maximum statistical robustness. Requires a well-calibrated tracker."
+
+adaptive-mode: true
+
+heads:
+  ema: true
+  brownian: true
+  adaptive: true
+  predictive: true
+  chi-square: true
+  pareto: true
+  mtm: true
+
+params:
+  rot-alpha-min: 0.085
+  rot-alpha-max: 0.218
+  rot-curve: 4.26
+  pos-alpha-min: 0.085
+  pos-alpha-max: 0.218
+  pos-curve: 4.26
+  rot-deadzone: 0.156
+  pos-deadzone: 1.041

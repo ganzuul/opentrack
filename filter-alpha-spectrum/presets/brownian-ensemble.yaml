@@ -1,0 +1,29 @@
+# Alpha Spectrum preset: Brownian Ensemble
+#
+# EMA geometry anchor plus Brownian drift correction.
+# Brownian head adds low-frequency stability, compensating for slow drift
+# that EMA alone would not reject. Good general-purpose two-head setup.
+
+name: "Brownian Ensemble"
+description: "EMA geometry plus Brownian drift correction. Two-head setup suitable for most general-purpose head tracking."
+
+adaptive-mode: false
+
+heads:
+  ema: true
+  brownian: true
+  adaptive: false
+  predictive: false
+  chi-square: false
+  pareto: false
+  mtm: false
+
+params:
+  rot-alpha-min: 0.085
+  rot-alpha-max: 0.218
+  rot-curve: 4.26
+  pos-alpha-min: 0.085
+  pos-alpha-max: 0.218
+  pos-curve: 4.26
+  rot-deadzone: 0.156
+  pos-deadzone: 1.041
