@@ -29,12 +29,12 @@ jobs:
 
     steps:
     - name: clone opentrack/opentrack
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         submodules: true
 
     - name: clone opentrack/depends
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         repository: opentrack/opentrack-depends
         submodules: true
@@ -133,7 +133,7 @@ jobs:
       run: ${{matrix.cmake}} --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target install
 
     - name: Upload build
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: buildoutput-${{ matrix.os }}
         path: ${{github.workspace}}/build/install/
