@@ -63,6 +63,55 @@ jobs:
         BUILD_WITH_STATIC_CRT: 'OFF'
       if: matrix.os == 'windows-latest'
 
+    - name: Install ONNXRuntime (Windows)
+      run: |
+        $version = "1.23.2"
+        $url = "https://github.com/microsoft/onnxruntime/releases/download/v$version/onnxruntime-win-x64-$version.zip"
+        Invoke-WebRequest -Uri $url -OutFile onnxruntime.zip
+        Expand-Archive onnxruntime.zip -DestinationPath $env:GITHUB_WORKSPACE
+        echo "ONNXRUNTIME_DIR=$env:GITHUB_WORKSPACE/onnxruntime-win-x64-$version" >> $env:GITHUB_ENV
+      if: matrix.os == 'windows-latest'
+
+    # Optional Windows SDKs - Uncomment to enable specific trackers/outputs:
+    # 
+    # - name: Install SteamVR SDK (for VR headset tracking)
+    #   run: |
+    #     Invoke-WebRequest -Uri "https://github.com/ValveSoftware/openvr/archive/refs/tags/v2.5.1.zip" -OutFile steamvr.zip
+    #     Expand-Archive steamvr.zip -DestinationPath $env:GITHUB_WORKSPACE
+    #     echo "SDK_VALVE_STEAMVR=$env:GITHUB_WORKSPACE/openvr-2.5.1" >> $env:GITHUB_ENV
+    #   if: matrix.os == 'windows-latest'
+    #
+    # - name: Install Eyeware Beam SDK (eye tracking)
+    #   run: |
+    #     # Download from https://beam.eyeware.tech/developers/
+    #     # Extract and set SDK_EYEWARE_BEAM environment variable
+    #   if: matrix.os == 'windows-latest'
+    #
+    # - name: Install Kinect v2 SDK (face tracking)
+    #   run: |
+    #     # Download Kinect SDK 2.0 from Microsoft
+    #     # choco install kinectsdk2 (if available)
+    #     # Set SDK_KINECT20 environment variable
+    #   if: matrix.os == 'windows-latest'
+    #
+    # - name: Install Intel RealSense SDK (camera tracking)
+    #   run: |
+    #     # Download from https://github.com/IntelRealSense/librealsense/releases
+    #     # Set SDK_REALSENSE environment variable
+    #   if: matrix.os == 'windows-latest'
+    #
+    # - name: Install vJoy (virtual joystick output)
+    #   run: |
+    #     choco install vjoy
+    #     # Set SDK_VJOYSTICK environment variable
+    #   if: matrix.os == 'windows-latest'
+    #
+    # - name: Install Oculus SDK (Rift support)
+    #   run: |
+    #     # Download from https://developer.oculus.com/downloads/
+    #     # Extract and set SDK_RIFT_140 environment variable
+    #   if: matrix.os == 'windows-latest'
+
     - name: Install opencv (macOS)
       run: brew install opencv
       if: matrix.os == 'macos-latest'
@@ -78,13 +127,13 @@ jobs:
       if: matrix.os != 'ubuntu-latest'
 
     - name: Configure
-      run: ${{matrix.cmake}} -GNinja -S ${{github.workspace}}/ -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DQt6_DIR="${{env.QT_ROOT_DIR}}/lib/cmake/Qt6" -DONNXRuntime_DIR=/usr/lib/cmake/onnxruntime
+      run: ${{matrix.cmake}} -GNinja -S ${{github.workspace}}/ -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DQt6_DIR="${{env.QT_ROOT_DIR}}/lib/cmake/Qt6" -DONNXRuntime_DIR=${{ matrix.os == 'ubuntu-latest' && '/usr/lib/cmake/onnxruntime' || env.ONNXRUNTIME_DIR }}
 
     - name: Build
       run: ${{matrix.cmake}} --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target install
 
-#    - name: Upload build
-#      uses: actions/upload-artifact@v3
-#      with:
-#        name: buildoutput
-#        path: ${{github.workspace}}/build/
+    - name: Upload build
+      uses: actions/upload-artifact@v3
+      with:
+        name: buildoutput-${{ matrix.os }}
+        path: ${{github.workspace}}/build/install/
